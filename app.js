@@ -960,7 +960,7 @@ function showProfile() {
   <div class="body">
     <p class="note" style="margin-top:0">The profile holds rules only. It contains no names, records or counts, and it is the only thing this page saves on your computer.</p>
     <div class="sec">Office name</div>
-    <input id="pName" maxlength="60" placeholder="e.g. Parramatta" value="${esc(state.profile.officeName || '')}" style="border:1px solid var(--line);border-radius:8px;padding:7px 10px;width:100%">
+    <input id="pName" maxlength="60" placeholder="e.g. your electorate name" value="${esc(state.profile.officeName || '')}" style="border:1px solid var(--line);border-radius:8px;padding:7px 10px;width:100%">
     <div class="note" style="margin-top:4px">Shown on the dashboard. Saved on this computer only.</div>
     <div class="sec">Built-in rules</div>
     <table class="plain"><tbody>${DEFAULT_RULES.map(r => `<tr><td>${esc(r.note)}</td><td class="mono" style="font-size:11px;color:var(--muted)">${esc(r.re)}</td></tr>`).join('')}</tbody></table>
