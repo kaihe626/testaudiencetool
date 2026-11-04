@@ -67,6 +67,7 @@ const DEFAULT_RULES = [
   { re: '^contact details (added|changed|updated)', cls: 'admin', note: 'Contact detail changes are admin' },
   { re: 'office administration', cls: 'admin', note: 'Office administration is admin' },
   { re: 'record adjustment', cls: 'admin', note: 'Record adjustments are admin' },
+  { re: 'persuasion|voting intention|target(ing)? ?(list|tag)?\\b|swing|^vi\\s*[:\\d]', cls: 'ignore', note: 'Persuasion and targeting tags are never used' },
   { re: '^pfn\\s*:', cls: 'contact', note: 'PFN: topics are real contact' },
 ];
 const CHANNEL_CODES = {
@@ -111,7 +112,7 @@ function loadProfile() {
 }
 function saveProfile() {
   // Only tag-value rules are saved. Never rows, counts or file contents.
-  const clean = { version: state.profile.version, values: {} };
+  const clean = { version: state.profile.version, officeName: String(state.profile.officeName || '').slice(0, 60), values: {} };
   for (const [k, v] of Object.entries(state.profile.values)) clean.values[k] = { cls: v.cls, value: v.value || '' };
   try { localStorage.setItem(PROFILE_KEY, JSON.stringify(clean)); return true; } catch (e) { return false; }
 }
@@ -148,6 +149,10 @@ function normAge(v) {
   return s; // office-specific code: kept as written
 }
 const truthy = v => { const s = String(v ?? '').trim().toLowerCase(); return !!s && !['n', 'no', 'false', '0', 'none', '-'].includes(s); };
+/* Campaign Central's multi-value fields can arrive run together with no
+   separator ("Phone BankingPFN: Ethnic/Korean"). Split where a lower-case
+   letter, digit or bracket runs straight into a capital letter. */
+const splitRunTogether = v => splitMulti(String(v ?? '').replace(/([a-z0-9)])(?=[A-Z])/g, '$1;'));
 const splitMulti = v => String(v ?? '').split(/[;,|]/).map(x => x.trim()).filter(x => x && x.toLowerCase() !== 'none');
 
 /* ------------------------------------------------------------------ file reading */
@@ -201,6 +206,8 @@ function classify(value) {
 }
 
 /* ------------------------------------------------------------------ the import gate */
+/* Persuasion and targeting tags are removed outright, even from memory. */
+function dropIgnored(v) { const c = classify(v); return c && c.cls === 'ignore' && c.src === 'rule' ? '' : String(v ?? '').trim(); }
 function runGate(rows, fileName) {
   const report = { fileName, rowCount: Math.max(0, rows.length - 1), kept: [], converted: [], dropped: [], strippedNames: [], strippedDob: [], strippedAddress: [], warnings: [], scanDropped: [] };
   if (rows.length < 2) throw new Error('The file has no data rows.');
@@ -266,6 +273,7 @@ function runGate(rows, fileName) {
   const people = []; const byId = new Map(); let dupes = 0;
   const unclassified = new Map(); // value -> {cols:Set, people:count}
   let datedContacts = 0, undatedContacts = 0, adminSkipped = 0, maxDay = -Infinity;
+  let persuasionDropped = 0;
   const noteNoCode = { n: 0 };
 
   const vals = (row, cols) => cols.map(c => String(row[c] ?? '').trim()).filter(Boolean);
@@ -301,6 +309,7 @@ function runGate(rows, fileName) {
         }
         return null;
       }
+      if (c.cls === 'ignore' && c.src === 'rule') persuasionDropped++;
       if (c.cls === 'community' || c.cls === 'religion' || c.cls === 'housing') { if (!attrs[c.cls].includes(c.value)) attrs[c.cls].push(c.value); }
       if (c.cls === 'issue') { if (!attrs.issues.includes(c.value)) attrs.issues.push(c.value); }
       return c.cls;
@@ -326,7 +335,7 @@ function runGate(rows, fileName) {
       if (t != null && t <= dayNum(today)) { maxDay = Math.max(maxDay, t); datedContacts++; } else undatedContacts++;
       contacts.push({ t: t != null && t <= dayNum(today) ? t : null, ch, dir });
     }
-    for (const c of I.ccTopics) for (const v of splitMulti(row[c])) {
+    for (const c of I.ccTopics) for (const v of splitRunTogether(row[c])) {
       const cls = applyTag(v, head[c]);
       if (cls === 'contact') { contacts.push({ t: null, ch: 'Other', dir: null }); undatedContacts++; }
     }
@@ -351,13 +360,14 @@ function runGate(rows, fileName) {
   const sHead = [], sCols = [];
   head.forEach((h, i) => {
     const r = roles[i];
-    if (r.role === 'topic') { sHead.push(`TOPIC (${r.set})`); sCols.push(row => row[i]); }
-    else if (r.role === 'tag') { sHead.push(`Tag (${r.set})`); sCols.push(row => row[i]); }
+    if (r.role === 'topic') { sHead.push(`TOPIC (${r.set})`); sCols.push(row => dropIgnored(row[i])); }
+    else if (r.role === 'tag') { sHead.push(`Tag (${r.set})`); sCols.push(row => dropIgnored(row[i])); }
+    else if (r.role === 'ccTopics') { sHead.push(h); sCols.push(row => splitRunTogether(row[i]).filter(v => dropIgnored(v)).join('; ')); }
     else if (r.role === 'note') {
       sHead.push(`Interaction Details Set ${r.set}`);
       sCols.push(row => { const n = String(row[i] ?? ''); const dm = n.match(/^\s*(\d{1,2}\/\d{1,2}\/\d{4})/); const cm = n.toUpperCase().match(CODE_RE); return [dm ? dm[1] : '', cm ? cm[1].replace(/\s+/g, ' ') : ''].filter(Boolean).join(' - '); });
     }
-    else if (['id', 'gender', 'community', 'religion', 'housing', 'suburb', 'postcode', 'age', 'issues', 'ccTopics'].includes(r.role)) { sHead.push(h); sCols.push(row => row[i]); }
+    else if (['id', 'gender', 'community', 'religion', 'housing', 'suburb', 'postcode', 'age', 'issues'].includes(r.role)) { sHead.push(h); sCols.push(row => row[i]); }
     else if (['email', 'mobile', 'phone'].includes(r.role)) { sHead.push('Has ' + r.role); sCols.push(row => truthy(row[i]) ? 'Y' : ''); }
     else if (r.role === 'enrol') { sHead.push('EnrolDate'); sCols.push(row => { const d = parseDate(row[i]); return d && (today - d) / DAY <= 365 ? `${today.getDate()}/${today.getMonth() + 1}/${today.getFullYear()}` : (d ? '01/01/1900' : ''); }); }
   });
@@ -380,6 +390,7 @@ function runGate(rows, fileName) {
   if (mode === 'dated' && undatedContacts) report.warnings.push({ lvl: 'warn', title: `${fmt(undatedContacts)} contacts have no date`, body: 'They count towards "ever contacted" but cannot be placed in a time period.' });
   if (!I.id.length) report.warnings.push({ lvl: 'warn', title: 'No ID column', body: 'Target-list downloads need a Campaign Central ID column. Everything else works.' });
   if (!hasReach) report.warnings.push({ lvl: 'info', title: 'No email, mobile or phone columns', body: 'Reachability is not available for this file.' });
+  if (persuasionDropped) report.warnings.push({ lvl: 'bad', title: `${fmt(persuasionDropped)} persuasion or targeting tags removed`, body: 'Voting-intention and targeting tags are never read, counted or kept, even in memory.' });
   if (adminSkipped) report.warnings.push({ lvl: 'info', title: `${fmt(adminSkipped)} admin records excluded`, body: 'Record adjustments and contact-detail changes are not counted as contact.' });
 
   return {
@@ -566,6 +577,7 @@ function renderDashboard() {
         <div class="stat big" title="100 means the office's contact is spread across ${esc(DIM_LABEL[state.dim].toLowerCase())} groups in exact proportion to the number of electors in each.">
           <div class="k">Coverage balance</div><div class="v">${A.balance}<small>/100</small></div>
           <div class="s">across ${esc(DIM_LABEL[state.dim].toLowerCase())} · ${delta == null ? 'no earlier period' : (delta >= 0 ? '+' : '−') + Math.abs(delta) + ' vs previous period'}</div>
+          <div class="s" style="max-width:250px;margin-left:auto;margin-top:4px;color:var(--faint)">100 = contact spread in exact proportion to the number of electors in each group</div>
         </div>
       </div>
     </div>
@@ -577,10 +589,11 @@ function renderDashboard() {
         <div class="stops">${PERIODS.map((p, i) => `<button class="stop ${i < state.period ? 'past' : ''} ${i === state.period ? 'on' : ''}" data-period="${i}"><span class="dot"></span>${p.short}</button>`).join('')}</div>
       </div>
       <div class="mini"><div class="k">CONTACTS</div><b>${fmt(A.C)}</b><span>${fmt(A.R)} people reached (${pct(A.R, A.N)}%)</span></div>
+      ${A.tot.office + A.tot.constituent === 0 ? `<div class="mini" style="text-align:left"><div class="k">WHO STARTED IT</div><span>Not recorded in this file</span></div>` : `
       <div class="mini" style="text-align:left"><div class="k">WHO STARTED IT</div>
         <div class="split"><i style="width:${officeShare * 100}%;background:var(--blue)"></i><i style="width:${(1 - officeShare) * 100}%;background:var(--purple)"></i></div>
         <div class="splitlbl"><span><b style="font-size:12px;display:inline;color:var(--blue-d)">${Math.round(officeShare * 100)}%</b> office</span><span><b style="font-size:12px;display:inline;color:var(--purple)">${100 - Math.round(officeShare * 100)}%</b> constituent</span></div>
-      </div>
+      </div>`}
     </div>
 
     <div class="grid2">
@@ -652,8 +665,8 @@ function renderSegment(A) {
     ${chTotal ? `<div class="mix">${chs.map(([k, v]) => `<i style="width:${v / chTotal * 100}%;background:${CHANNEL_COLOURS[k] || '#94A3B8'}"></i>`).join('')}</div>
     <div class="mixl">${chs.map(([k, v]) => `<span style="--c:${CHANNEL_COLOURS[k] || '#94A3B8'}">${esc(k)} ${pct(v, chTotal)}%</span>`).join('')}</div>` : '<div class="note">No contact in this period.</div>'}
     <div class="sec">Who started the contact</div>
-    <div class="mix"><i style="width:${offPct * 100}%;background:var(--blue)"></i><i style="width:${(1 - offPct) * 100}%;background:var(--purple)"></i></div>
-    <div class="mixl" style="justify-content:space-between"><span style="--c:var(--blue)">Office reached out ${Math.round(offPct * 100)}%</span><span style="--c:var(--purple)">Constituent came to us ${100 - Math.round(offPct * 100)}%</span></div>
+    ${g.office + g.constituent === 0 ? '<div class="note">Not recorded in this file for this period.</div>' : `<div class="mix"><i style="width:${offPct * 100}%;background:var(--blue)"></i><i style="width:${(1 - offPct) * 100}%;background:var(--purple)"></i></div>
+    <div class="mixl" style="justify-content:space-between"><span style="--c:var(--blue)">Office reached out ${Math.round(offPct * 100)}%</span><span style="--c:var(--purple)">Constituent came to us ${100 - Math.round(offPct * 100)}%</span></div>`}
     <div class="note" style="margin-top:10px">${g.lastOff != null ? `Last office-initiated contact · ${esc(fmtDate(fromDay(g.lastOff)))}${d.asOfDay - g.lastOff > 0 ? ` (${d.asOfDay - g.lastOff} day${d.asOfDay - g.lastOff === 1 ? '' : 's'} before the latest record)` : ''}` : 'No office-initiated contact in this period'}</div>
     <div style="margin-top:16px"><button class="btn primary block" data-target="${esc(g.dim)}|${esc(g.name)}" ${d.hasIds ? '' : 'disabled title="This file has no ID column"'}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>Download target list</button></div>
     <div class="note" style="text-align:center;margin-top:6px">${d.hasIds ? `${fmt(notReached)} IDs not reached ${d.mode === 'dated' ? 'in this period' : 'yet'} · available while the file is open` : 'Needs a Campaign Central ID column'}</div>
@@ -807,21 +820,42 @@ let pending = null;
 
 async function startImport(file, opts = {}) {
   modal(`<header><div><div class="kicker">New import · step 1 of 3</div><h2>Reading ${esc(file.name)}</h2></div><button class="x">×</button></header>
-    <div class="body"><p class="note">Reading the file in this tab. Nothing is uploaded.</p><div class="prog"><i id="pg" style="width:35%"></i></div></div>`);
+    <div class="body"><p class="note" id="pgTxt">Reading the file in this tab. Nothing is uploaded.</p><div class="prog"><i id="pg" style="width:15%"></i></div><p class="note" style="margin-bottom:0">A large spreadsheet can take 10-20 seconds.</p></div>`);
   try {
-    await new Promise(r => setTimeout(r, 30));
-    const rows = await readFile(file);
-    $('#pg') && ($('#pg').style.width = '75%');
-    await new Promise(r => setTimeout(r, 30));
-    const data = runGate(rows, file.name);
-    rows.length = 0; // let the raw rows go
-    data.officeName = opts.officeName || 'Your office';
+    const data = await readAndGate(file);
+    data.officeName = opts.officeName || state.profile.officeName || 'Your office';
     pending = data;
     showGate();
   } catch (e) {
     modal(`<header><div><div class="kicker">New import</div><h2>That file couldn't be read</h2></div><button class="x">×</button></header>
       <div class="body"><p>${esc(e.message || e)}</p><p class="note">Try saving it as CSV or .xlsx from Campaign Central or Excel.</p></div>`);
   }
+}
+
+/* Reading a large spreadsheet takes several seconds, so it happens in a
+   background worker and the page stays responsive. If workers aren't
+   available, it falls back to reading here. */
+async function readAndGate(file) {
+  const stage = (txt, w) => { const el = $('#pgTxt'); if (el) el.textContent = txt; const b = $('#pg'); if (b) b.style.width = w; };
+  if (typeof Worker !== 'undefined') {
+    try {
+      const buf = await file.arrayBuffer();
+      return await new Promise((resolve, reject) => {
+        const w = new Worker('worker.js');
+        w.onmessage = e => {
+          const m = e.data;
+          if (m.stage) stage(m.stage, m.w);
+          else { w.terminate(); m.error ? reject(new Error(m.error)) : resolve(m.data); }
+        };
+        w.onerror = e => { w.terminate(); reject(new Error('worker-failed')); e.preventDefault(); };
+        w.postMessage({ buf, name: file.name, profile: state.profile }, [buf]);
+      });
+    } catch (e) { if (e.message !== 'worker-failed') throw e; }
+  }
+  stage('Reading the file…', '40%'); await new Promise(r => setTimeout(r, 30));
+  const rows = await readFile(file);
+  stage('Running the import gate…', '75%'); await new Promise(r => setTimeout(r, 30));
+  return runGate(rows, file.name);
 }
 
 function collapse(items, key) {
@@ -925,6 +959,9 @@ function showProfile() {
   modal(`<header><div><div class="kicker">Office profile v${state.profile.version}</div><h2>How tag values are read</h2></div><button class="x">×</button></header>
   <div class="body">
     <p class="note" style="margin-top:0">The profile holds rules only. It contains no names, records or counts, and it is the only thing this page saves on your computer.</p>
+    <div class="sec">Office name</div>
+    <input id="pName" maxlength="60" placeholder="e.g. Parramatta" value="${esc(state.profile.officeName || '')}" style="border:1px solid var(--line);border-radius:8px;padding:7px 10px;width:100%">
+    <div class="note" style="margin-top:4px">Shown on the dashboard. Saved on this computer only.</div>
     <div class="sec">Built-in rules</div>
     <table class="plain"><tbody>${DEFAULT_RULES.map(r => `<tr><td>${esc(r.note)}</td><td class="mono" style="font-size:11px;color:var(--muted)">${esc(r.re)}</td></tr>`).join('')}</tbody></table>
     <div class="sec">Channel codes read from interaction notes</div>
@@ -933,11 +970,16 @@ function showProfile() {
     ${vals.length ? `<table class="plain"><thead><tr><th>Tag value</th><th>Means</th></tr></thead><tbody>${vals.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(CLASSES.find(c => c[0] === v.cls)?.[1] || v.cls)}${['community', 'religion', 'housing', 'issue'].includes(v.cls) ? ': ' + esc(v.value) : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="note">None yet. Answers from the "Unclassified tags" step appear here.</p>'}
   </div>
   <footer><button class="btn" id="pReset" ${vals.length ? '' : 'disabled'}>Reset to built-in rules</button><button class="btn primary" id="pClose">Done</button></footer>`);
-  $('#pClose').onclick = closeModal;
-  $('#pReset').onclick = () => { state.profile = { version: state.profile.version + 1, values: {} }; saveProfile(); if (state.data) reprocess(); closeModal(); render(); toast('Office profile reset.'); };
+  $('#pClose').onclick = () => {
+    const nm = $('#pName').value.trim().slice(0, 60);
+    if (nm !== (state.profile.officeName || '')) { state.profile.officeName = nm; saveProfile(); if (state.data) state.data.officeName = nm || 'Your office'; render(); }
+    closeModal();
+  };
+  $('#pReset').onclick = () => { state.profile = { version: state.profile.version + 1, officeName: state.profile.officeName, values: {} }; saveProfile(); if (state.data) reprocess(); closeModal(); render(); toast('Office profile reset.'); };
 }
 
 /* ------------------------------------------------------------------ wiring */
+if (typeof document !== 'undefined') {
 $('#fileInput').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) startImport(f); };
 document.querySelectorAll('[data-nav]').forEach(b => b.onclick = () => {
   const n = b.dataset.nav;
@@ -947,3 +989,4 @@ document.querySelectorAll('[data-nav]').forEach(b => b.onclick = () => {
   if (n === 'unclassified') showClassify(true);
 });
 render();
+}

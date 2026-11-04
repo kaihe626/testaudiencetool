@@ -12,7 +12,7 @@ A browser-only prototype of the Audience Coverage dashboard. It shows an elector
 
 ## Files
 
-- `index.html`, `app.js` - the app.
+- `index.html`, `app.js` - the app. `worker.js` reads large files in the background so the page stays responsive.
 - `sample/demo-electorate-export.csv` - 18,000 fictional electors. Every name, suburb, postcode and contact is invented.
 - `vendor/xlsx.full.min.js` - SheetJS 0.18.5, used only to read .xlsx files (licence in `vendor/`).
 - `fonts/` - Public Sans and JetBrains Mono (SIL Open Font Licence).
