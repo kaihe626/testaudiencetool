@@ -988,26 +988,41 @@ function showProfile() {
 
 /* ------------------------------------------------------------------ onboarding: welcome, getting started, tour, help */
 const SMALL_FILE = 50;
+const REDUCED = typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 function guide() { return state.profile.guide || (state.profile.guide = {}); }
 function isDemoFile(name) { return name === 'demo-electorate-export.csv' || /^privacy-gate-test/.test(name || ''); }
 
+function gateAnim() {
+  const rows = [['Olivia Testperson', '12/03/1958', 'Riverbend', '65-74 · Riverbend · ✓ mobile'], ['Liam Fakely', '04/11/1990', 'Ashdale', '35-44 · Ashdale · ✓ email'], ['Mei Notreal', '0412 345 678', 'Tarrin', 'Tarrin · ✓ mobile']];
+  return `<div class="gatevis" aria-hidden="true">
+    <div class="gcol">${rows.map((r, i) => `<div class="grec" style="--i:${i}"><s>${r[0]}</s> · <s>${r[1]}</s> · ${r[2]}</div>`).join('')}</div>
+    <div class="gline"><span><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span></div>
+    <div class="gcol">${rows.map((r, i) => `<div class="gout" style="--i:${i}">${r[3]}</div>`).join('')}</div>
+  </div>`;
+}
 function showWelcome() {
   modal(`<header><div><div class="kicker">Audience coverage · trial build</div><h2>Welcome</h2></div></header>
-  <div class="body">
-    <p style="margin-top:0">This dashboard shows which groups in the electorate the office is in contact with in proportion to their size, which groups it is missing, and where to go next.</p>
-    <div class="sec">What happens to your file</div>
-    <ul class="ticks">
-      <li>Your export is read inside this browser tab. It is never uploaded, and there is no server.</li>
-      <li>Names, dates of birth, addresses and contact details are removed before anything is counted. Interaction notes are cut down to a date and a channel.</li>
-      <li>Closing the tab, or pressing Close, clears the file.</li>
-      <li>The only thing saved on this computer is your office profile: the office name and how your tags should be read.</li>
-    </ul>
-    <div class="sec">Your office name</div>
-    <input id="wName" maxlength="60" placeholder="e.g. your electorate name" value="${esc(state.profile.officeName || '')}" class="field">
-    <div class="note" style="margin-top:4px">Shown on the dashboard. You can change it later under Office profile.</div>
-    <label class="ack"><input type="checkbox" id="wAck"> <span>During the trial I'll only load de-identified exports, and I'll keep any downloaded target lists inside the office.</span></label>
+  <div class="body welcome">
+    <div>
+      <p style="margin-top:0">This dashboard shows which groups in the electorate the office is in contact with in proportion to their size, which groups it is missing, and where to go next.</p>
+      <div class="sec">Your office name</div>
+      <input id="wName" maxlength="60" placeholder="e.g. your electorate name" value="${esc(state.profile.officeName || '')}" class="field">
+      <div class="note" style="margin-top:4px">Shown on the dashboard. You can change it later under Office profile.</div>
+      <label class="ack"><input type="checkbox" id="wAck"> <span>During the trial I'll only load de-identified exports, and I'll keep any downloaded target lists inside the office.</span></label>
+    </div>
+    <div class="wpanel">
+      <b>Your file, minus the personal bits</b>
+      ${gateAnim()}
+      <ul class="ticks">
+        <li>Read inside this browser tab. Never uploaded, and there is no server.</li>
+        <li>Names, birthdays, addresses and contact details are removed before anything is counted.</li>
+        <li>Closing the tab, or pressing Close, clears the file.</li>
+        <li>Only the office name and how your tags are read are saved on this computer.</li>
+      </ul>
+    </div>
   </div>
   <footer><span class="note">Takes about 10 minutes to get set up.</span><button class="btn primary" id="wGo" disabled>Get started</button></footer>`);
+  $('#modalRoot .modal').classList.add('wide');
   $('#wAck').onchange = e => { $('#wGo').disabled = !e.target.checked; };
   $('#wGo').onclick = () => {
     state.profile.officeName = $('#wName').value.trim().slice(0, 60);
@@ -1033,17 +1048,39 @@ function renderGuide() {
     <p class="lede">Work through these once. Everything after that is: export, load, read.</p>
     <div class="card steps">${steps.map((s, i) => `<div class="step ${s.done ? 'done' : ''}"><span class="num">${s.done ? '✓' : i + 1}</span><div><b>${s.t}</b><p>${s.b}</p></div><div class="act">${s.act}</div></div>`).join('')}</div>
 
-    <h2 id="g-export">Prepare your export</h2>
-    <p>Export the whole electorate from Campaign Central, including people the office has never contacted, with their interaction history. Column names don't need to match exactly: the tool reads the headings and works out what each column is.</p>
-    <div class="cols3">
-      <div class="card"><div class="sec" style="margin-top:0;color:var(--green)">Must have</div><ul><li>Campaign Central ID</li><li>Suburb</li><li>Postcode</li><li>TOPIC, Tag and Interaction Details sets</li></ul><p class="note">The ID is what lets you download a target list and pull it back into Campaign Central.</p></div>
-      <div class="card"><div class="sec" style="margin-top:0;color:var(--blue-d)">Worth adding</div><ul><li>Email, Mobile, Phone</li><li>Age bracket, or DOB if that's all there is</li><li>Ethnicity, Gender</li><li>Interests</li><li>Enrolment date</li></ul><p class="note">Contact columns become yes/no flags and DOB becomes an age bracket. The values themselves are discarded.</p></div>
-      <div class="card"><div class="sec" style="margin-top:0;color:var(--orange)">Leave out</div><ul><li>First and last names</li><li>Street and postal address</li><li>Free-text notes columns</li></ul><p class="note">The import gate strips these if they slip through and tells you it found them, but the safest file never contained them.</p></div>
+    <h2 id="g-export">Pack these columns into your export</h2>
+    <p>Export the whole electorate from Campaign Central, including people the office has never contacted, with their interaction history. Column names don't need to match exactly: the tool reads the headings and works out what each column is. Hover a column to see why.</p>
+    <div class="card">
+      <div class="sheet">${EXPORT_COLS.map(([c, k, why]) => `<div class="c${k}" title="${esc(why)}"><span>${esc(c)}</span></div>`).join('')}</div>
+      <div class="sheetkey"><span class="cg">■ Must have</span><span class="cb">■ Worth adding</span><span class="cr">■ Leave out</span></div>
+      <div class="cols3 notes">
+        <p><b>Must have.</b> The Campaign Central ID is what lets you download a target list and pull it back into Campaign Central.</p>
+        <p><b>Worth adding.</b> Email, mobile and phone become yes/no flags, and date of birth becomes an age bracket. The values themselves are discarded.</p>
+        <p><b>Leave out.</b> The import gate strips these if they slip through and tells you it found them, but the safest file never contained them.</p>
+      </div>
     </div>
 
     <h2 id="g-read">Reading the dashboard</h2>
-    <div class="card gloss">
-      ${GLOSSARY.map(([t, d]) => `<div><b>${t}</b><p>${d}</p></div>`).join('')}
+    <div class="card fsx">
+      <div class="fsx-l">
+        <div class="kicker" style="font-size:11px">The one idea to get</div>
+        <h3 style="margin:2px 0 4px">Fair share: is a group hearing from you as much as its size suggests?</h3>
+        <div class="ppl-row">
+          <div class="grp"><div class="ppl" id="fsE"></div><div class="cap">12 in every 100 electors live in Fennvale</div></div>
+          <div class="grp"><div class="ppl" id="fsC"></div><div class="cap" id="fsCap"></div></div>
+        </div>
+        <label class="note" for="fsSlider" style="display:block;margin-top:14px">Drag to change how much contact Fennvale gets</label>
+        <input type="range" id="fsSlider" min="1" max="30" value="6">
+      </div>
+      <div class="fsx-r">
+        <div class="fsx-tile" id="fsTile"></div>
+        <div class="note" id="fsSum" style="margin-top:8px"></div>
+        <div class="scale">${['#E85D2F', '#F08B5B', '#F8C9AC', '#EEF1F5', '#DBE7FA', '#8FB1EE', '#2E6FE0'].map(c => `<i style="background:${c}"></i>`).join('')}</div>
+        <div class="ticks2"><span>Under</span><span>Balanced</span><span>Over</span></div>
+      </div>
+    </div>
+    <div class="gloss2">
+      ${GLOSS2.map(([t, svg, d]) => `<div class="card"><div class="gv">${svg}</div><div><b>${t}</b><p>${d}</p></div></div>`).join('')}
     </div>
     <h3>Before you draw conclusions</h3>
     <ul class="cautions">
@@ -1055,18 +1092,35 @@ function renderGuide() {
     </ul>
   </div></div>`;
 }
-const GLOSSARY = [
-  ['Fair share', 'A group\'s share of the office\'s contacts, divided by its share of electors. 1.0× means contact is exactly in proportion to its size. 0.5× means half as much as its size would suggest.'],
-  ['Underserved, balanced, overserved', 'Under 0.8× is underserved (orange). Above 1.25× is overserved (blue). In between is balanced (grey).'],
-  ['Reached', 'The share of people in a group who had at least one contact in the period. Many contacts can land on the same few people.'],
-  ['Low reach', 'A group getting its fair share of contacts, but reaching fewer than half as many of its people as the electorate overall. The same people keep hearing from the office.'],
-  ['Coverage balance', 'One score for the whole tab. 100 means contact is spread across the groups in exact proportion to their size. Lower means some groups get much more or much less than their share.'],
-  ['Who started it', 'Office reached out means the office made the first contact (outgoing email, call, letter, doorknock). Constituent came to us means they contacted the office first.'],
-  ['Hidden groups', 'Any group or overlap with fewer than 10 electors is never shown, so no small group or individual can be picked out.'],
+const EXPORT_COLS = [
+  ['ID', 'g', 'Campaign Central ID. Needed to download target lists.'], ['Suburb', 'g', 'Groups people by where they live.'], ['Postcode', 'g', 'Groups people by postcode.'], ['TOPIC (1)', 'g', 'Interaction sets: TOPIC, Tag and Interaction Details, as many as the export has.'], ['Tag (1)', 'g', 'Read by the office profile to find community, issue and other tags.'], ['Interaction Details Set 1', 'g', 'Cut down to a date and channel code. The note text is discarded.'],
+  ['Email', 'b', 'Becomes a yes/no flag. The address is discarded.'], ['Mobile', 'b', 'Becomes a yes/no flag. The number is discarded.'], ['DOB', 'b', 'Becomes an age bracket. The date is discarded.'], ['Ethnicity', 'b', 'Groups people by community.'], ['Interests', 'b', 'Groups people by issue.'], ['EnrolDate', 'b', 'Flags new electors. The date is discarded.'],
+  ['First Name', 'r', 'Not needed. Stripped if present.'], ['Last Name', 'r', 'Not needed. Stripped if present.'], ['Address', 'r', 'Not needed. Stripped if present.'], ['Notes', 'r', 'Free text can hold anything. Dropped if present.'],
 ];
+const svgDots = (n, fill, extra = '') => { let o = ''; for (let i = 0; i < n; i++) o += `<circle cx="${12 + (i % 5) * 22}" cy="${14 + Math.floor(i / 5) * 22}" r="7" fill="${typeof fill === 'function' ? fill(i) : fill}"/>`; return `<svg viewBox="0 0 120 60">${o}${extra}</svg>`; };
+const GLOSS2 = [
+  ['Underserved, balanced, overserved', `<svg viewBox="0 0 120 60"><rect x="4" y="18" width="36" height="24" rx="4" fill="#E85D2F"/><rect x="42" y="18" width="36" height="24" rx="4" fill="#EEF1F5"/><rect x="80" y="18" width="36" height="24" rx="4" fill="#2E6FE0"/><text x="22" y="54" font-size="8" text-anchor="middle" fill="#64748B">&lt;0.8×</text><text x="98" y="54" font-size="8" text-anchor="middle" fill="#64748B">&gt;1.25×</text></svg>`, 'Under 0.8× a fair share is underserved (orange). Above 1.25× is overserved (blue). In between is balanced (grey).'],
+  ['Reached', svgDots(10, i => i < 3 ? '#2E6FE0' : '#E3E7EE'), 'The share of people in a group who had at least one contact in the period. Here, 3 of 10.'],
+  ['Low reach', `<svg viewBox="0 0 120 60">${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(i => `<circle cx="${40 + (i % 5) * 18}" cy="${16 + Math.floor(i / 5) * 26}" r="6" fill="${i === 1 || i === 2 ? '#2E6FE0' : '#E3E7EE'}"/>`).join('')}<rect x="2" y="24" width="14" height="12" rx="2" fill="#475569"/>${[0, 1, 2, 3, 4].map(k => `<path d="M16 30 Q 30 ${8 + k * 4} ${k % 2 ? 76 : 58} 16" stroke="#EC9308" stroke-width="1.3" fill="none"/>`).join('')}</svg>`, 'A fair share of contacts, but landing on the same few people. Fewer than half as many reached as the electorate overall.'],
+  ['Who started it', `<svg viewBox="0 0 120 60"><rect x="4" y="20" width="22" height="20" rx="3" fill="#475569"/><circle cx="104" cy="22" r="7" fill="#94A3B8"/><path d="M93 44c2-8 20-8 22 0" fill="#94A3B8"/><path d="M30 24h56" stroke="#2E6FE0" stroke-width="3" marker-end="url(#ab)"/><path d="M88 38H34" stroke="#7E5BD0" stroke-width="3" marker-end="url(#ap)"/><defs><marker id="ab" markerWidth="6" markerHeight="6" refX="4" refY="3" orient="auto"><path d="M0 0l6 3-6 3z" fill="#2E6FE0"/></marker><marker id="ap" markerWidth="6" markerHeight="6" refX="4" refY="3" orient="auto"><path d="M0 0l6 3-6 3z" fill="#7E5BD0"/></marker></defs></svg>`, 'Blue: the office made the first contact (outgoing email, call, letter, doorknock). Purple: the constituent contacted the office first.'],
+  ['Coverage balance', `<svg viewBox="0 0 120 60"><path d="M20 52a40 40 0 0 1 80 0" stroke="#E3E7EE" stroke-width="9" fill="none"/><path d="M20 52a40 40 0 0 1 72.4-23.5" stroke="#1F7549" stroke-width="9" fill="none"/><text x="60" y="50" font-size="16" font-weight="700" text-anchor="middle" fill="#1F7549">86</text></svg>`, 'One score for the whole tab. 100 means contact is spread in exact proportion to each group\'s size.'],
+  ['Hidden groups', `<svg viewBox="0 0 120 60">${[0, 1, 2, 3, 4, 5, 6].map(i => `<circle cx="${16 + (i % 4) * 18}" cy="${18 + Math.floor(i / 4) * 22}" r="6" fill="#E3E7EE"/>`).join('')}<rect x="90" y="24" width="20" height="16" rx="3" fill="#94A3B8"/><path d="M94 24v-5a6 6 0 0 1 12 0v5" stroke="#94A3B8" stroke-width="2.5" fill="none"/></svg>`, 'Any group or overlap with fewer than 10 electors is never shown, so nobody can be picked out.'],
+];
+const personSvg = c => `<svg viewBox="0 0 16 22"><circle cx="8" cy="5" r="4" fill="${c}"/><path d="M1 21c0-5 3-8 7-8s7 3 7 8z" fill="${c}"/></svg>`;
+function updateFairShare() {
+  const sl = $('#fsSlider'); if (!sl) return; const c = +sl.value, e = 12; const fs = c / e; const [bg, dark] = fsColour(fs);
+  const st = fs < 0.8 ? 'Underserved' : fs > 1.25 ? 'Overserved' : 'Balanced';
+  $('#fsE').innerHTML = Array.from({ length: e }, () => personSvg('#94A3B8')).join('');
+  $('#fsC').innerHTML = Array.from({ length: Math.max(c, 12) }, (_, i) => personSvg(i < c ? (fs < 0.8 ? '#E85D2F' : fs > 1.25 ? '#2E6FE0' : '#64748B') : '#E3E7EE')).join('');
+  $('#fsCap').textContent = `${c} in every 100 contacts go to Fennvale`;
+  const t = $('#fsTile'); t.style.background = bg; t.style.color = dark ? '#fff' : 'var(--ink)';
+  t.innerHTML = `<b>Fennvale</b><span>${fsTxt(fs)} fair share</span><em>${st.toUpperCase()}</em>`;
+  $('#fsSum').textContent = `${c}% of contact ÷ 12% of electors = ${fsTxt(fs)}`;
+}
 function initials(s) { return String(s).replace(/[^A-Za-z\s]/g, '').split(/\s+/).filter(Boolean).map(x => x[0]).join('').slice(0, 2).toUpperCase(); }
 function bindGuide() {
   const main = $('#main');
+  const sl = $('#fsSlider'); if (sl) { sl.oninput = updateFairShare; updateFairShare(); }
   main.querySelectorAll('[data-g]').forEach(b => b.onclick = () => {
     const a = b.dataset.g;
     if (a === 'name') showProfile();
@@ -1103,7 +1157,9 @@ let tour = null;
 function startTour() {
   const steps = TOUR.filter(s => document.querySelector(s.sel));
   if (!steps.length) return;
-  tour = { steps, i: 0 }; drawTour();
+  tour = { steps, i: 0 };
+  const spot = document.createElement('div'); spot.className = 'tour-spot'; document.body.append(spot);
+  drawTour();
   window.addEventListener('scroll', placeTour, { passive: true }); window.addEventListener('resize', placeTour);
   document.addEventListener('keydown', tourKey);
 }
@@ -1115,19 +1171,18 @@ function endTour(finished) {
   if (finished) toast('Tour done. Getting started has the next step: preparing your own export.');
 }
 function drawTour() {
-  document.querySelectorAll('.tour-spot,.tour-tip').forEach(x => x.remove());
+  document.querySelectorAll('.tour-tip').forEach(x => x.remove());
   const s = tour.steps[tour.i]; const el = document.querySelector(s.sel); if (!el) return endTour();
   const r0 = el.getBoundingClientRect();
-  window.scrollTo(0, Math.max(0, window.scrollY + r0.top - Math.max(80, (window.innerHeight - Math.min(r0.height, window.innerHeight - 260)) / 2 - 60)));
-  const spot = document.createElement('div'); spot.className = 'tour-spot';
+  window.scrollTo({ top: Math.max(0, window.scrollY + r0.top - Math.max(80, (window.innerHeight - Math.min(r0.height, window.innerHeight - 260)) / 2 - 60)), behavior: REDUCED ? 'auto' : 'smooth' });
   const tip = document.createElement('div'); tip.className = 'tour-tip';
   const last = tour.i === tour.steps.length - 1;
-  tip.innerHTML = `<div class="kicker">Tour · ${tour.i + 1} of ${tour.steps.length}</div><b>${esc(s.t)}</b><p>${esc(s.b)}</p>
+  tip.innerHTML = `<div class="tdots">${tour.steps.map((_, k) => `<i class="${k === tour.i ? 'on' : k < tour.i ? 'past' : ''}"></i>`).join('')}<span class="kicker">${tour.i + 1} of ${tour.steps.length}</span></div><b>${esc(s.t)}</b><p>${esc(s.b)}</p>
     <div class="row"><button class="btn" id="tSkip">${last ? 'Close' : 'Skip tour'}</button><button class="btn primary" id="tNext">${last ? 'Finish' : 'Next'}</button></div>`;
-  document.body.append(spot, tip);
+  document.body.append(tip);
   $('#tSkip').onclick = () => endTour(last);
   $('#tNext').onclick = () => { if (last) endTour(true); else { tour.i++; drawTour(); } };
-  placeTour();
+  placeTour(); let n = 0; const follow = () => { placeTour(); if (++n < 40 && tour) requestAnimationFrame(follow); }; requestAnimationFrame(follow);
 }
 function placeTour() {
   if (!tour) return; const el = document.querySelector(tour.steps[tour.i].sel); const spot = $('.tour-spot'), tip = $('.tour-tip'); if (!el || !spot || !tip) return;
