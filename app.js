@@ -242,6 +242,7 @@ function runGate(rows, fileName) {
     }
   });
 
+  let blankCols = 0;
   const idx = role => roles.map((r, i) => r.role === role ? i : -1).filter(i => i >= 0);
   head.forEach((h, i) => {
     const r = roles[i].role;
@@ -252,10 +253,11 @@ function runGate(rows, fileName) {
     else if (r === 'enrol') report.converted.push({ col: h, to: 'new-elector flag (date discarded)' });
     else if (r === 'note') report.converted.push({ col: h, to: 'date and channel code only (text discarded)' });
     else if (r === 'id') report.kept.push({ col: h, as: 'ID, kept in this tab only for target lists' });
-    else if (['unknown', 'knownDrop', 'scanDropped'].includes(r)) { if (r !== 'scanDropped') report.dropped.push(h); }
+    else if (['unknown', 'knownDrop', 'scanDropped'].includes(r)) { if (r !== 'scanDropped') { if (String(h).trim()) report.dropped.push(h); else blankCols++; } }
     else if (r === 'sa1') report.dropped.push(h); // kept for Census matching in phase 5
     else report.kept.push({ col: h, as: r === 'topic' || r === 'tag' || r === 'ccTopics' ? 'tag values, read by the office profile' : DIM_LABEL[r] || r });
   });
+  if (blankCols) report.dropped.push(`${blankCols} column${blankCols === 1 ? '' : 's'} with no heading`);
   if (report.strippedDob.length) report.converted.push({ col: report.strippedDob.join(', '), to: 'age bracket (date of birth discarded)' });
 
   const sets = {};
