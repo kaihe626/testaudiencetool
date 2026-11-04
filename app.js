@@ -253,7 +253,7 @@ function runGate(rows, fileName) {
     else if (r === 'enrol') report.converted.push({ col: h, to: 'new-elector flag (date discarded)' });
     else if (r === 'note') report.converted.push({ col: h, to: 'date and channel code only (text discarded)' });
     else if (r === 'id') report.kept.push({ col: h, as: 'ID, kept in this tab only for target lists' });
-    else if (['unknown', 'knownDrop', 'scanDropped'].includes(r)) { if (r !== 'scanDropped') { if (String(h).trim()) report.dropped.push(h); else blankCols++; } }
+    else if (['unknown', 'knownDrop', 'scanDropped'].includes(r)) { if (r !== 'scanDropped') { if (String(h).trim()) report.dropped.push(h); else if (rows.slice(1).some(r => r[i] != null && String(r[i]).trim() !== '')) blankCols++; } }
     else if (r === 'sa1') report.dropped.push(h); // kept for Census matching in phase 5
     else report.kept.push({ col: h, as: r === 'topic' || r === 'tag' || r === 'ccTopics' ? 'tag values, read by the office profile' : DIM_LABEL[r] || r });
   });
