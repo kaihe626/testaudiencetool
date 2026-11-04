@@ -577,8 +577,8 @@ function renderDashboard() {
       <div class="stats">
         ${completeness != null ? `<div class="stat"><div class="k">Tag completeness</div><div class="v">${completeness}<small>%</small></div><div class="s">${esc(tagDims.map(k => DIM_LABEL[k].toLowerCase()).join(', '))}</div></div><div class="vsep"></div>` : ''}
         <div class="stat big" title="100 means the office's contact is spread across ${esc(DIM_LABEL[state.dim].toLowerCase())} groups in exact proportion to the number of electors in each.">
-          <div class="k">Coverage balance</div><div class="v">${A.balance}<small>/100</small></div>
-          <div class="s">across ${esc(DIM_LABEL[state.dim].toLowerCase())} · ${delta == null ? 'no earlier period' : (delta >= 0 ? '+' : '−') + Math.abs(delta) + ' vs previous period'}</div>
+          <div class="k">Coverage balance</div><div class="v">${A.visible.length ? A.balance : '–'}<small>${A.visible.length ? '/100' : ''}</small></div>
+          <div class="s">across ${esc(DIM_LABEL[state.dim].toLowerCase())} · ${!A.visible.length ? 'groups too small to score' : delta == null ? 'no earlier period' : (delta >= 0 ? '+' : '−') + Math.abs(delta) + ' vs previous period'}</div>
           <div class="s" style="max-width:250px;margin-left:auto;margin-top:4px;color:var(--faint)">100 = contact spread in exact proportion to the number of electors in each group</div>
         </div>
       </div>
@@ -626,6 +626,7 @@ function renderDashboard() {
 }
 
 function renderTreemap(A) {
+  if (!A.visible.length) return `<div class="tm" id="tm" style="display:flex;align-items:center;justify-content:center;background:#F4F6F9;border-radius:10px"><div style="max-width:420px;text-align:center;padding:24px"><b style="display:block;font-size:15px;margin-bottom:6px">No ${esc(DIM_LABEL[state.dim].toLowerCase())} group has 10 or more electors</b><span class="note">To protect privacy, groups under ${MIN_CELL} electors are never shown. Try another tab, or load a larger file.</span></div></div>`;
   const items = A.visible.slice().sort((a, b) => b.e - a.e);
   const top = items.slice(0, 18);
   const rest = items.slice(18);
@@ -646,7 +647,7 @@ function renderTreemap(A) {
 
 function renderSegment(A) {
   const d = state.data; const g = A.list.find(x => x.name === state.sel);
-  if (!g) return '<div class="card"><div class="sub">Select a group.</div></div>';
+  if (!g) return `<div class="card"><div class="sub">${A.visible.length ? 'Select a group in the chart to see its detail.' : 'Nothing to show for this tab.'}</div></div>`;
   const chTotal = Object.values(g.ch).reduce((s, v) => s + v, 0);
   const chs = Object.entries(g.ch).sort((a, b) => b[1] - a[1]);
   const offPct = g.office + g.constituent ? g.office / (g.office + g.constituent) : 0;
@@ -686,7 +687,9 @@ function renderTrend() {
     const e = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - i + 1, 0));
     months.push({ label: s.toLocaleDateString('en-AU', { month: 'short' }), w: [dayNum(s), Math.min(dayNum(e), d.asOfDay)], partial: i === 0 && dayNum(e) > d.asOfDay });
   }
-  const pts = months.map(m => { let c = 0, r = 0, off = 0; for (const p of d.people) { let n = 0; for (const x of p.contacts) if (inWin(x, m.w)) { n++; if (x.dir === 'out') off++; } c += n; if (n) r++; } return { ...m, c, r, off }; });
+  let pts = months.map(m => { let c = 0, r = 0, off = 0; for (const p of d.people) { let n = 0; for (const x of p.contacts) if (inWin(x, m.w)) { n++; if (x.dir === 'out') off++; } c += n; if (n) r++; } return { ...m, c, r, off }; });
+  const first = pts.findIndex(p => p.c > 0);
+  pts = pts.slice(Math.max(0, Math.min(first < 0 ? 0 : first, pts.length - 6)));
   const max = Math.max(1, ...pts.map(p => p.c));
   const W = 1000, H = 150, pad = 26, bw = (W - pad * 2) / pts.length;
   const bars = pts.map((p, i) => {
@@ -700,7 +703,7 @@ function renderTrend() {
   return `<div class="card trend">
     <div class="cardhead"><div><div class="kicker" style="font-size:11px">Over time</div><h2>Contact by month</h2><div class="sub">Built from the dated contact history in this one file. Nothing is stored between imports.</div></div>
     <div class="legend" style="margin:0"><span style="display:inline-flex;gap:6px;align-items:center"><i style="width:10px;height:10px;border-radius:2px;background:#2E6FE0;display:inline-block"></i>Office reached out</span><span style="display:inline-flex;gap:6px;align-items:center"><i style="width:10px;height:10px;border-radius:2px;background:#C9B8F0;display:inline-block"></i>Constituent came to us</span></div></div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Contacts per month for the last 12 months">${bars}</svg>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Contacts per month">${bars}</svg>
   </div>`;
 }
 
