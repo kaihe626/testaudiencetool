@@ -7,7 +7,11 @@ A browser-only prototype of the Audience Coverage dashboard. It shows an elector
 - A loaded file is read inside the browser tab and is never uploaded. There is no server.
 - The import gate removes names, dates of birth (turned into age brackets first), addresses and phone/email values (turned into yes/no flags), and reduces interaction notes to a date and a channel code before anything is counted.
 - Groups under 10 electors are never shown.
-- The only thing saved in the browser is the office profile: rules about what tag values mean. It holds no personal information.
+- The only thing saved in the browser is the office profile: the office name, rules about what tag values mean, and which getting-started steps are done. It holds no personal information.
+
+## First use
+
+A welcome screen asks for the office name and a one-line acknowledgement, then opens Getting started: four steps (name the office, take the tour on the sample, prepare an export, load your own file), the export column checklist, and a guide to reading the dashboard. Every chart has a "How to read this" link.
 - A Content Security Policy stops the page loading or sending anything outside its own address. Fonts and the spreadsheet reader are hosted here, not loaded from third parties.
 
 ## Files

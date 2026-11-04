@@ -111,8 +111,9 @@ function loadProfile() {
   return { version: 1, values: {} };
 }
 function saveProfile() {
-  // Only tag-value rules are saved. Never rows, counts or file contents.
-  const clean = { version: state.profile.version, officeName: String(state.profile.officeName || '').slice(0, 60), values: {} };
+  // Only tag-value rules, the office name and which setup steps are done. Never rows, counts or file contents.
+  const g = state.profile.guide || {};
+  const clean = { version: state.profile.version, officeName: String(state.profile.officeName || '').slice(0, 60), values: {}, guide: { ack: !!g.ack, tour: !!g.tour, export: !!g.export, own: !!g.own } };
   for (const [k, v] of Object.entries(state.profile.values)) clean.values[k] = { cls: v.cls, value: v.value || '' };
   try { localStorage.setItem(PROFILE_KEY, JSON.stringify(clean)); return true; } catch (e) { return false; }
 }
@@ -485,13 +486,15 @@ function render() {
   $('#profVer').textContent = 'v' + p.version;
   const uq = state.data ? state.data.unclassified.length : 0;
   $('#uqBadge').textContent = uq; $('#uqBadge').classList.toggle('hidden', !uq);
+  document.querySelectorAll('[data-nav=dashboard],[data-nav=guide]').forEach(b => b.classList.toggle('on', (b.dataset.nav === 'guide') === (state.view === 'guide')));
+  if (state.view === 'guide') { main.innerHTML = renderGuide(); bindGuide(); return; }
   if (!state.data) { main.innerHTML = renderEmpty(); bindEmpty(); return; }
   main.innerHTML = renderDashboard();
   bindDashboard();
 }
 
 function renderEmpty() {
-  $('#officeName').textContent = 'No file loaded'; $('#officeAv').textContent = '—';
+  $('#officeName').textContent = state.profile.officeName || 'No file loaded'; $('#officeAv').textContent = initials(state.profile.officeName || '') || '—';
   return `
   <div class="topbar"><span class="chip grey"><i></i>No file open</span><span class="meta">Load an export to see your coverage</span></div>
   <div class="wrap"><div class="empty">
@@ -509,15 +512,9 @@ function renderEmpty() {
       <div class="card opt" id="usePoison"><h3>Test the privacy gate</h3><p>Loads a small fictional file full of names, dates of birth, addresses and phone numbers, so you can watch them get stripped.</p></div>
       <a class="card opt" href="sample/demo-electorate-export.csv" download style="color:inherit;text-decoration:none"><h3>Download the sample file</h3><p>See the column layout the tool expects. Every row is invented.</p></a>
     </div>
-    <div class="card how">
-      <h2 style="font-size:16px;margin:0">Preparing an export</h2>
-      <ol>
-        <li>Export the whole electorate from Campaign Central, including people never contacted, with their interaction history.</li>
-        <li>Delete first name, last name and other name columns, and the street and postal address columns.</li>
-        <li>Replace date of birth with an age bracket (18-24, 25-34, 35-44 and so on).</li>
-        <li>Keep the Campaign Central ID if you want to download target lists. IDs stay in this tab.</li>
-      </ol>
-      <p class="note" style="margin-top:10px">If anything is missed, the import gate removes it before anything is counted and tells you what it found.</p>
+    <div class="card how" style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+      <div><h2 style="font-size:16px;margin:0">New to the dashboard?</h2><p class="note" style="margin:4px 0 0">Getting started covers what to put in your export and how to read what you see.</p></div>
+      <button class="btn" id="toGuide">Getting started</button>
     </div>
   </div></div>`;
 }
@@ -529,6 +526,7 @@ function bindEmpty() {
   drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) startImport(e.dataTransfer.files[0]); };
   $('#useSample').onclick = loadSample;
   $('#usePoison').onclick = () => startImport(makePoisonFile());
+  $('#toGuide').onclick = () => { state.view = 'guide'; render(); window.scrollTo(0, 0); };
 }
 
 function renderDashboard() {
@@ -552,7 +550,7 @@ function renderDashboard() {
   const officeShare = A.tot.office + A.tot.constituent ? A.tot.office / (A.tot.office + A.tot.constituent) : 0;
   const asOf = fromDay(d.asOfDay);
   const officeTitle = d.officeName;
-  $('#officeName').textContent = officeTitle; $('#officeAv').textContent = officeTitle.replace(/[^A-Za-z\s]/g, '').split(/\s+/).filter(Boolean).map(s => s[0]).join('').slice(0, 2).toUpperCase();
+  $('#officeName').textContent = officeTitle; $('#officeAv').textContent = initials(officeTitle);
 
   return `
   <div class="topbar">
@@ -564,6 +562,7 @@ function renderDashboard() {
     <button class="btn" id="closeFile" title="Clear the file from this tab">Close</button>
   </div>
   <div class="wrap">
+    ${d.people.length < SMALL_FILE ? `<div class="banner"><b>Small file: ${fmt(d.people.length)} people.</b> One contact can swing a group's score a lot, and most groups will be under the 10-elector limit and hidden. Read the patterns as examples, not conclusions.</div>` : ''}
     <div class="hero">
       <div>
         <div class="kicker">Audience coverage · ${esc(officeTitle)} · ${esc(d.mode === 'dated' ? per.long : 'All contact on record')}</div>
@@ -599,8 +598,8 @@ function renderDashboard() {
     </div>
 
     <div class="grid2">
-      <div class="card">
-        <div class="cardhead"><div><div class="kicker" style="font-size:11px">Who you're reaching</div><h2>Attention by group</h2><div class="sub">Box size = electors · colour = share of contacts vs share of electors</div></div><div class="note">From the roll · every elector counted</div></div>
+      <div class="card" id="tmCard">
+        <div class="cardhead"><div><div class="kicker" style="font-size:11px">Who you're reaching</div><h2>Attention by group</h2><div class="sub">Box size = electors · colour = share of contacts vs share of electors</div></div><div style="text-align:right"><div class="note">From the roll · every elector counted</div>${helpBtn('treemap')}</div></div>
         <div class="tabs">${d.dims.map(k => `<button class="tab ${k === state.dim ? 'on' : ''}" data-dim="${k}">${DIM_LABEL[k]}</button>`).join('')}</div>
         ${renderTreemap(A)}
         <div class="legend">
@@ -655,6 +654,7 @@ function renderSegment(A) {
   const notReached = g.e - g.r;
   return `<div class="card seg">
     <div class="cardhead"><div class="kicker" style="font-size:11px">Segment detail</div><span class="status st-${g.status}">${STATUS_TXT[g.status]}</span></div>
+    <div style="margin-top:4px">${helpBtn('segment')}</div>
     <h2 style="margin-top:8px">${esc(g.name)}</h2>
     <div class="sub">${esc(DIM_LABEL[g.dim])} · ${fmt(g.e)} electors (${(g.eShare * 100).toFixed(1)}%)</div>
     <div class="scorebox"><span class="n" style="color:${g.status === 'u' ? 'var(--orange)' : g.status === 'o' ? 'var(--blue-d)' : 'var(--green)'}">${g.score}</span><span class="note">/100 coverage</span><span class="fs" style="color:${g.status === 'u' ? 'var(--orange)' : 'var(--ink2)'}">${fsTxt(g.fs)} fair share</span></div>
@@ -701,7 +701,7 @@ function renderTrend() {
       <text x="${x + (bw - 12) / 2}" y="${H - 26 - h}" text-anchor="middle" font-size="11" fill="#475569">${fmt(p.c)}</text></g>`;
   }).join('');
   return `<div class="card trend">
-    <div class="cardhead"><div><div class="kicker" style="font-size:11px">Over time</div><h2>Contact by month</h2><div class="sub">Built from the dated contact history in this one file. Nothing is stored between imports.</div></div>
+    <div class="cardhead"><div><div class="kicker" style="font-size:11px">Over time</div><h2>Contact by month</h2><div class="sub">Built from the dated contact history in this one file. Nothing is stored between imports.</div>${helpBtn('trend')}</div>
     <div class="legend" style="margin:0"><span style="display:inline-flex;gap:6px;align-items:center"><i style="width:10px;height:10px;border-radius:2px;background:#2E6FE0;display:inline-block"></i>Office reached out</span><span style="display:inline-flex;gap:6px;align-items:center"><i style="width:10px;height:10px;border-radius:2px;background:#C9B8F0;display:inline-block"></i>Constituent came to us</span></div></div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Contacts per month">${bars}</svg>
   </div>`;
@@ -716,7 +716,7 @@ function renderGap(allGroups) {
   const pos = fs => { const v = Math.log2(Math.max(0.125, Math.min(8, fs))); return v; }; // -3..3
   return `<div class="card gap">
     <div class="kicker" style="font-size:11px">Attention gap</div><h2>Overserved vs underserved</h2>
-    <div class="sub">Share of contacts vs share of electors, across every dimension. 1.0× is a fair share.</div>
+    <div class="sub">Share of contacts vs share of electors, across every dimension. 1.0× is a fair share.</div>${helpBtn('gap')}
     <div class="gaphead"><div></div><div><span>← less than fair share</span><span>more →</span></div><div></div></div>
     ${rows.map(g => {
       const v = pos(g.fs); const half = 50; const len = Math.abs(v) / 3 * half;
@@ -746,7 +746,7 @@ function renderHeatmap(w) {
   const opt = sel => d.dims.map(k => `<option value="${k}" ${k === sel ? 'selected' : ''}>${DIM_LABEL[k]}</option>`).join('');
   return `<div class="card hm">
     <div class="kicker" style="font-size:11px">Where groups overlap</div><h2>Coverage across intersections</h2>
-    <div class="sub">Fair share for each combination. Hover a cell for its numbers.</div>
+    <div class="sub">Fair share for each combination. Hover a cell for its numbers.</div>${helpBtn('heatmap')}
     <div style="margin:12px 0"><select id="hmRow">${opt(state.hmRow)}</select>×<select id="hmCol" style="margin-left:6px">${opt(state.hmCol)}</select></div>
     <table><thead><tr><th></th>${Cg.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>
     ${R.map(r => `<tr><th class="rh" title="${esc(r)}">${esc(r)}</th>${Cg.map(c => {
@@ -784,8 +784,8 @@ function renderMoves(allGroups, A) {
     mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/>',
     phone: '<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/>',
   };
-  return `<div style="margin-top:26px"><div class="kicker" style="font-size:11px">Close the gap</div><h2 style="font-size:19px;margin:2px 0 2px">Recommended next moves</h2>
-  <div class="sub" style="color:var(--muted);font-size:13px">Where the next doorknock, phone bank or email campaign should go. Download the list, then pull it in Campaign Central.</div>
+  return `<div style="margin-top:26px" id="movesBlock"><div class="kicker" style="font-size:11px">Close the gap</div><h2 style="font-size:19px;margin:2px 0 2px">Recommended next moves</h2>
+  <div class="sub" style="color:var(--muted);font-size:13px">Where the next doorknock, phone bank or email campaign should go. Download the list, then pull it in Campaign Central. ${helpBtn('moves')}</div>
   <div class="moves">${moves.map(m => `<div class="card move">
     <div class="tag"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${ICON[m.icon]}</svg></span>${esc(m.kind)} · ${esc(DIM_LABEL[m.g.dim])}</div>
     <h3>${esc(m.title)}</h3><p>${esc(m.body)}</p>
@@ -800,6 +800,7 @@ function bindDashboard() {
   main.querySelectorAll('[data-group]').forEach(b => b.onclick = () => { state.sel = b.dataset.group; render(); });
   main.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => { const [dim, name] = b.dataset.jump.split('|'); state.dim = dim; state.sel = name; render(); $('#tm').scrollIntoView({ behavior: 'smooth', block: 'center' }); });
   main.querySelectorAll('[data-target]').forEach(b => b.onclick = () => { const i = b.dataset.target.indexOf('|'); downloadTargets(b.dataset.target.slice(0, i), b.dataset.target.slice(i + 1)); });
+  main.querySelectorAll('[data-help]').forEach(b => b.onclick = () => showHelp(b.dataset.help));
   $('#hmRow').onchange = e => { state.hmRow = e.target.value; render(); };
   $('#hmCol').onchange = e => { state.hmCol = e.target.value; render(); };
   $('#newImport').onclick = () => $('#fileInput').click();
@@ -929,9 +930,11 @@ function reprocessPending() { if (pending) pending = rerun(pending); }
 function reprocess() { if (state.data) state.data = rerun(state.data); }
 
 function finishImport() {
-  state.data = pending; pending = null; state.sel = null;
+  state.data = pending; pending = null; state.sel = null; state.view = null;
   if (state.data.mode !== 'dated') state.period = PERIODS.length - 1;
+  if (!isDemoFile(state.data.fileName) && !guide().own) { guide().own = true; saveProfile(); }
   closeModal(); render(); window.scrollTo(0, 0);
+  if (state.tourPending) { state.tourPending = false; setTimeout(startTour, 350); }
 }
 
 async function loadSample() {
@@ -963,7 +966,7 @@ function showProfile() {
   const vals = Object.entries(state.profile.values);
   modal(`<header><div><div class="kicker">Office profile v${state.profile.version}</div><h2>How tag values are read</h2></div><button class="x">×</button></header>
   <div class="body">
-    <p class="note" style="margin-top:0">The profile holds rules only. It contains no names, records or counts, and it is the only thing this page saves on your computer.</p>
+    <p class="note" style="margin-top:0">The profile holds the office name, tag rules and which setup steps are done. It contains no names, records or counts, and it is the only thing this page saves on your computer.</p>
     <div class="sec">Office name</div>
     <input id="pName" maxlength="60" placeholder="e.g. your electorate name" value="${esc(state.profile.officeName || '')}" style="border:1px solid var(--line);border-radius:8px;padding:7px 10px;width:100%">
     <div class="note" style="margin-top:4px">Shown on the dashboard. Saved on this computer only.</div>
@@ -980,7 +983,160 @@ function showProfile() {
     if (nm !== (state.profile.officeName || '')) { state.profile.officeName = nm; saveProfile(); if (state.data) state.data.officeName = nm || 'Your office'; render(); }
     closeModal();
   };
-  $('#pReset').onclick = () => { state.profile = { version: state.profile.version + 1, officeName: state.profile.officeName, values: {} }; saveProfile(); if (state.data) reprocess(); closeModal(); render(); toast('Office profile reset.'); };
+  $('#pReset').onclick = () => { state.profile = { version: state.profile.version + 1, officeName: state.profile.officeName, guide: state.profile.guide, values: {} }; saveProfile(); if (state.data) reprocess(); closeModal(); render(); toast('Office profile reset.'); };
+}
+
+/* ------------------------------------------------------------------ onboarding: welcome, getting started, tour, help */
+const SMALL_FILE = 50;
+function guide() { return state.profile.guide || (state.profile.guide = {}); }
+function isDemoFile(name) { return name === 'demo-electorate-export.csv' || /^privacy-gate-test/.test(name || ''); }
+
+function showWelcome() {
+  modal(`<header><div><div class="kicker">Audience coverage · trial build</div><h2>Welcome</h2></div></header>
+  <div class="body">
+    <p style="margin-top:0">This dashboard shows which groups in the electorate the office is in contact with in proportion to their size, which groups it is missing, and where to go next.</p>
+    <div class="sec">What happens to your file</div>
+    <ul class="ticks">
+      <li>Your export is read inside this browser tab. It is never uploaded, and there is no server.</li>
+      <li>Names, dates of birth, addresses and contact details are removed before anything is counted. Interaction notes are cut down to a date and a channel.</li>
+      <li>Closing the tab, or pressing Close, clears the file.</li>
+      <li>The only thing saved on this computer is your office profile: the office name and how your tags should be read.</li>
+    </ul>
+    <div class="sec">Your office name</div>
+    <input id="wName" maxlength="60" placeholder="e.g. your electorate name" value="${esc(state.profile.officeName || '')}" class="field">
+    <div class="note" style="margin-top:4px">Shown on the dashboard. You can change it later under Office profile.</div>
+    <label class="ack"><input type="checkbox" id="wAck"> <span>During the trial I'll only load de-identified exports, and I'll keep any downloaded target lists inside the office.</span></label>
+  </div>
+  <footer><span class="note">Takes about 10 minutes to get set up.</span><button class="btn primary" id="wGo" disabled>Get started</button></footer>`);
+  $('#wAck').onchange = e => { $('#wGo').disabled = !e.target.checked; };
+  $('#wGo').onclick = () => {
+    state.profile.officeName = $('#wName').value.trim().slice(0, 60);
+    guide().ack = true; saveProfile(); closeModal(); state.view = 'guide'; render(); window.scrollTo(0, 0);
+  };
+}
+
+function renderGuide() {
+  const g = guide(); const p = state.profile;
+  if (!state.data) { $('#officeName').textContent = p.officeName || 'No file loaded'; $('#officeAv').textContent = initials(p.officeName || '') || '—'; }
+  const steps = [
+    { done: !!p.officeName, t: 'Name your office', b: 'So the dashboard is labelled for your electorate.', act: `<button class="btn" data-g="name">${p.officeName ? 'Change' : 'Set name'}</button>` },
+    { done: !!g.tour, t: 'Try the sample and take the tour', b: 'Loads 18,000 fictional electors and points out the four parts of the dashboard. About three minutes.', act: `<button class="btn ${g.tour ? '' : 'primary'}" data-g="tour">${g.tour ? 'Take it again' : 'Start the tour'}</button>` },
+    { done: !!g.export, t: 'Prepare your export', b: 'Export from Campaign Central with the columns listed below.', act: `<button class="btn" data-g="export">${g.export ? 'Mark as not done' : 'Mark as done'}</button>` },
+    { done: !!g.own, t: 'Load your own export', b: 'Check what the import gate removed, sort any tags it doesn\'t recognise, then open your dashboard.', act: `<button class="btn ${g.tour && !g.own ? 'primary' : ''}" data-g="load">Choose a file</button>` },
+  ];
+  const n = steps.filter(s => s.done).length;
+  return `
+  <div class="topbar"><span class="chip grey"><i></i>Getting started</span><span class="meta">${n} of ${steps.length} steps done</span>${state.data ? '<span class="ok"></span><button class="btn" data-g="dash">Back to dashboard</button>' : ''}</div>
+  <div class="wrap"><div class="guide">
+    <div class="kicker">Audience coverage · getting started</div>
+    <h1>Set up in four steps</h1>
+    <p class="lede">Work through these once. Everything after that is: export, load, read.</p>
+    <div class="card steps">${steps.map((s, i) => `<div class="step ${s.done ? 'done' : ''}"><span class="num">${s.done ? '✓' : i + 1}</span><div><b>${s.t}</b><p>${s.b}</p></div><div class="act">${s.act}</div></div>`).join('')}</div>
+
+    <h2 id="g-export">Prepare your export</h2>
+    <p>Export the whole electorate from Campaign Central, including people the office has never contacted, with their interaction history. Column names don't need to match exactly: the tool reads the headings and works out what each column is.</p>
+    <div class="cols3">
+      <div class="card"><div class="sec" style="margin-top:0;color:var(--green)">Must have</div><ul><li>Campaign Central ID</li><li>Suburb</li><li>Postcode</li><li>TOPIC, Tag and Interaction Details sets</li></ul><p class="note">The ID is what lets you download a target list and pull it back into Campaign Central.</p></div>
+      <div class="card"><div class="sec" style="margin-top:0;color:var(--blue-d)">Worth adding</div><ul><li>Email, Mobile, Phone</li><li>Age bracket, or DOB if that's all there is</li><li>Ethnicity, Gender</li><li>Interests</li><li>Enrolment date</li></ul><p class="note">Contact columns become yes/no flags and DOB becomes an age bracket. The values themselves are discarded.</p></div>
+      <div class="card"><div class="sec" style="margin-top:0;color:var(--orange)">Leave out</div><ul><li>First and last names</li><li>Street and postal address</li><li>Free-text notes columns</li></ul><p class="note">The import gate strips these if they slip through and tells you it found them, but the safest file never contained them.</p></div>
+    </div>
+
+    <h2 id="g-read">Reading the dashboard</h2>
+    <div class="card gloss">
+      ${GLOSSARY.map(([t, d]) => `<div><b>${t}</b><p>${d}</p></div>`).join('')}
+    </div>
+    <h3>Before you draw conclusions</h3>
+    <ul class="cautions">
+      <li><b>It measures what gets logged, not everything that happens.</b> If outgoing calls or emails aren't recorded in Campaign Central, the office will look more reactive than it is. Patchy logging shows up as a gap.</li>
+      <li><b>Small numbers swing.</b> In a group of 15 people, one extra contact changes its score a lot. Treat small groups as a prompt to look closer, not a finding.</li>
+      <li><b>"Underserved" describes a share, not a failure.</b> It means the group got less contact than its size would suggest in this period. There may be good reasons.</li>
+      <li><b>"Untagged" is missing data.</b> It groups people with nothing recorded for that category. A large untagged group usually means tags aren't being added when contact is logged.</li>
+      <li><b>Check more than one time period.</b> A quiet month isn't a trend. Compare the last month with the last six months before acting.</li>
+    </ul>
+  </div></div>`;
+}
+const GLOSSARY = [
+  ['Fair share', 'A group\'s share of the office\'s contacts, divided by its share of electors. 1.0× means contact is exactly in proportion to its size. 0.5× means half as much as its size would suggest.'],
+  ['Underserved, balanced, overserved', 'Under 0.8× is underserved (orange). Above 1.25× is overserved (blue). In between is balanced (grey).'],
+  ['Reached', 'The share of people in a group who had at least one contact in the period. Many contacts can land on the same few people.'],
+  ['Low reach', 'A group getting its fair share of contacts, but reaching fewer than half as many of its people as the electorate overall. The same people keep hearing from the office.'],
+  ['Coverage balance', 'One score for the whole tab. 100 means contact is spread across the groups in exact proportion to their size. Lower means some groups get much more or much less than their share.'],
+  ['Who started it', 'Office reached out means the office made the first contact (outgoing email, call, letter, doorknock). Constituent came to us means they contacted the office first.'],
+  ['Hidden groups', 'Any group or overlap with fewer than 10 electors is never shown, so no small group or individual can be picked out.'],
+];
+function initials(s) { return String(s).replace(/[^A-Za-z\s]/g, '').split(/\s+/).filter(Boolean).map(x => x[0]).join('').slice(0, 2).toUpperCase(); }
+function bindGuide() {
+  const main = $('#main');
+  main.querySelectorAll('[data-g]').forEach(b => b.onclick = () => {
+    const a = b.dataset.g;
+    if (a === 'name') showProfile();
+    if (a === 'tour') { state.tourPending = true; loadSample(); }
+    if (a === 'export') { guide().export = !guide().export; saveProfile(); render(); }
+    if (a === 'load') $('#fileInput').click();
+    if (a === 'dash') { state.view = null; render(); window.scrollTo(0, 0); }
+  });
+}
+
+const HELP = {
+  treemap: ['Attention by group', 'Each box is a group of electors. Box size is how many electors are in it. Colour compares the group\'s share of the office\'s contacts with its share of electors: orange is less than its fair share, blue is more, grey is about right.', 'Switch tabs to group by suburb, postcode, age, community or issues. A person can sit in more than one group, for example two issues. Click a box to see its detail on the right.'],
+  segment: ['Segment detail', 'The coverage score is 100 when the group gets at least its fair share of contact. The funnel shows how many people in the group were actually reached, which can be much lower than the contact count.', 'Channel mix and who started it show how the office talks to this group. If almost all contact is constituents coming to the office, nobody is reaching out. Target list downloads the Campaign Central IDs of people in this group not reached in the period.'],
+  trend: ['Contact by month', 'Total contacts logged each month, split into office-initiated (blue) and constituent-initiated (purple). The latest month is faded because it is only partly complete.', 'Built only from dates in this file. A dip can mean less contact or less logging.'],
+  gap: ['Attention gap', 'The groups furthest from a fair share across every tab, side by side. Bars left of the centre line got less contact than their size suggests; bars to the right got more.', 'The scale doubles at each step, so 0.5× and 2× are the same distance from the centre.'],
+  heatmap: ['Coverage across intersections', 'Fair share for combinations of two categories, for example age within each suburb. It finds gaps that a single tab hides, like young renters in one suburb.', 'Blank cells have fewer than 10 electors and are hidden so nobody can be singled out.'],
+  moves: ['Recommended next moves', 'Up to three suggestions worked out from the gaps above: the largest underserved groups, and any group where contact keeps landing on the same people.', 'The suggested channel depends on what contact details the group has on file. Treat these as a starting point for planning, not a ranking of priorities.'],
+};
+function helpBtn(k) { return `<button class="help" data-help="${k}" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/></svg>How to read this</button>`; }
+function showHelp(k) {
+  const [t, ...ps] = HELP[k];
+  modal(`<header><div><div class="kicker">How to read this</div><h2>${esc(t)}</h2></div><button class="x">×</button></header>
+  <div class="body">${ps.map(p => `<p style="margin-top:0">${esc(p)}</p>`).join('')}<p class="note" style="margin-bottom:0">More in <a href="#" id="hGuide">Getting started → Reading the dashboard</a>.</p></div>`);
+  $('#hGuide').onclick = e => { e.preventDefault(); closeModal(); state.view = 'guide'; render(); const el = $('#g-read'); if (el) el.scrollIntoView(); };
+}
+
+const TOUR = [
+  { sel: '.card.period', t: 'Pick a time period', b: 'Every number on the page updates. "As at" is the date of the latest contact in your file, not today.' },
+  { sel: '#tmCard', t: 'See who you\'re reaching', b: 'Each box is a group. Size is how many electors; colour is contact share against elector share. Orange means less than its fair share. Switch tabs to group by suburb, age, community or issues.' },
+  { sel: '.card.seg', t: 'Look at one group', b: 'Click any box to see how many people were reached, by which channel, and who started the contact. Download target list gives you the IDs of people not reached.' },
+  { sel: '#movesBlock', t: 'Decide where to go next', b: 'Up to three suggestions worked out from the biggest gaps. Each has its own target list. Look for "How to read this" on any chart if you get stuck.' },
+];
+let tour = null;
+function startTour() {
+  const steps = TOUR.filter(s => document.querySelector(s.sel));
+  if (!steps.length) return;
+  tour = { steps, i: 0 }; drawTour();
+  window.addEventListener('scroll', placeTour, { passive: true }); window.addEventListener('resize', placeTour);
+  document.addEventListener('keydown', tourKey);
+}
+function tourKey(e) { if (e.key === 'Escape') endTour(); }
+function endTour(finished) {
+  document.querySelectorAll('.tour-spot,.tour-tip').forEach(x => x.remove());
+  window.removeEventListener('scroll', placeTour); window.removeEventListener('resize', placeTour); document.removeEventListener('keydown', tourKey);
+  tour = null; guide().tour = true; saveProfile();
+  if (finished) toast('Tour done. Getting started has the next step: preparing your own export.');
+}
+function drawTour() {
+  document.querySelectorAll('.tour-spot,.tour-tip').forEach(x => x.remove());
+  const s = tour.steps[tour.i]; const el = document.querySelector(s.sel); if (!el) return endTour();
+  const r0 = el.getBoundingClientRect();
+  window.scrollTo(0, Math.max(0, window.scrollY + r0.top - Math.max(80, (window.innerHeight - Math.min(r0.height, window.innerHeight - 260)) / 2 - 60)));
+  const spot = document.createElement('div'); spot.className = 'tour-spot';
+  const tip = document.createElement('div'); tip.className = 'tour-tip';
+  const last = tour.i === tour.steps.length - 1;
+  tip.innerHTML = `<div class="kicker">Tour · ${tour.i + 1} of ${tour.steps.length}</div><b>${esc(s.t)}</b><p>${esc(s.b)}</p>
+    <div class="row"><button class="btn" id="tSkip">${last ? 'Close' : 'Skip tour'}</button><button class="btn primary" id="tNext">${last ? 'Finish' : 'Next'}</button></div>`;
+  document.body.append(spot, tip);
+  $('#tSkip').onclick = () => endTour(last);
+  $('#tNext').onclick = () => { if (last) endTour(true); else { tour.i++; drawTour(); } };
+  placeTour();
+}
+function placeTour() {
+  if (!tour) return; const el = document.querySelector(tour.steps[tour.i].sel); const spot = $('.tour-spot'), tip = $('.tour-tip'); if (!el || !spot || !tip) return;
+  const r = el.getBoundingClientRect(); const pad = 6;
+  Object.assign(spot.style, { left: r.left - pad + 'px', top: r.top - pad + 'px', width: r.width + pad * 2 + 'px', height: r.height + pad * 2 + 'px' });
+  const th = tip.offsetHeight, tw = tip.offsetWidth, H = window.innerHeight, W = window.innerWidth;
+  let top = r.bottom + 14; if (top + th > H - 12) top = r.top - th - 14; if (top < 12) top = H - th - 16;
+  const left = Math.min(Math.max(16, r.left), W - tw - 16);
+  Object.assign(tip.style, { top: top + 'px', left: left + 'px' });
 }
 
 /* ------------------------------------------------------------------ wiring */
@@ -988,10 +1144,12 @@ if (typeof document !== 'undefined') {
 $('#fileInput').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) startImport(f); };
 document.querySelectorAll('[data-nav]').forEach(b => b.onclick = () => {
   const n = b.dataset.nav;
-  if (n === 'dashboard') { closeModal(); window.scrollTo(0, 0); }
+  if (n === 'dashboard') { closeModal(); state.view = null; render(); window.scrollTo(0, 0); }
+  if (n === 'guide') { closeModal(); state.view = 'guide'; render(); window.scrollTo(0, 0); }
   if (n === 'import') $('#fileInput').click();
   if (n === 'profile') showProfile();
   if (n === 'unclassified') showClassify(true);
 });
 render();
+if (!guide().ack) showWelcome();
 }
