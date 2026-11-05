@@ -392,6 +392,8 @@ function runGate(rows, fileName) {
   for (const s of report.scanDropped) report.warnings.push({ lvl: 'bad', title: `Column "${s.col}" dropped by the content check`, body: `It looked like it contained ${s.why}, so none of it was used.` });
   if (dupes) report.warnings.push({ lvl: 'warn', title: `${fmt(dupes)} duplicate records merged`, body: 'Rows sharing an ID were combined into one person.' });
   if (mode === 'dated' && undatedContacts) report.warnings.push({ lvl: 'warn', title: `${fmt(undatedContacts)} contacts have no date`, body: 'They count towards "ever contacted" but cannot be placed in a time period.' });
+  { const never = people.filter(p => !p.contacts.length).length;
+    if (people.length >= 50 && never / people.length < 0.1) report.warnings.push({ lvl: 'warn', title: `Only ${pct(never, people.length)}% of people in this file have never been contacted`, body: 'This may be an export of contacted people only. The dashboard compares contact against everyone on the roll, so export the whole electorate, including people the office has never contacted, or every share and reach figure will be overstated.' }); }
   if (!I.id.length) report.warnings.push({ lvl: 'warn', title: 'No ID column', body: 'Target-list downloads need a Campaign Central ID column. Everything else works.' });
   if (!hasReach) report.warnings.push({ lvl: 'info', title: 'No email, mobile or phone columns', body: 'Reachability is not available for this file.' });
   if (persuasionDropped) report.warnings.push({ lvl: 'bad', title: `${fmt(persuasionDropped)} persuasion or targeting tags removed`, body: 'Voting-intention and targeting tags are never read, counted or kept, even in memory.' });
