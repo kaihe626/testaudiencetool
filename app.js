@@ -540,7 +540,7 @@ function render() {
 }
 
 function renderEmpty() {
-  $('#officeName').textContent = state.profile.officeName || 'No file loaded'; $('#officeAv').textContent = initials(state.profile.officeName || '') || '—';
+  $('#officeName').textContent = state.profile.officeName || 'No file loaded'; $('#officeAv').textContent = initials(state.profile.officeName || '') || '-';
   return `
   <div class="topbar"><span class="chip grey"><i></i>No file open</span><span class="meta">Load an export to see your coverage</span></div>
   <div class="wrap"><div class="empty">
@@ -645,7 +645,7 @@ function renderDashboard() {
     </div>
 
     <div class="grid2">
-      <div class="card" id="tmCard">
+      <div class="leftcol"><div class="card" id="tmCard">
         <div class="cardhead"><div><div class="stepk"><span>1</span>Who you're missing</div><h2>Attention by group</h2><div class="sub">Box size = electors · colour = how many of them you've reached, against the electorate's rate</div></div><div style="text-align:right"><div class="note">From the roll · every elector counted</div>${helpBtn('treemap')}</div></div>
         <div class="tabs">${d.dims.map(k => `<button class="tab ${k === state.dim ? 'on' : ''}" data-dim="${k}">${DIM_LABEL[k]}</button>`).join('')}</div>
         ${renderTreemap(A)}
@@ -657,10 +657,9 @@ function renderDashboard() {
           <span class="note">People count in every group they're tagged with. Untagged people form their own group.${A.smallCount ? ` ${A.smallCount} group${A.smallCount > 1 ? 's' : ''} under ${MIN_CELL} electors hidden.` : ''}</span>
         </div>
       </div>
+      ${d.mode === 'dated' ? renderTrend() : ''}</div>
       ${renderSegment(A)}
     </div>
-
-    ${d.mode === 'dated' ? renderTrend() : ''}
 
     <div class="grid2b">
       ${renderGap(allGroups)}
@@ -1164,7 +1163,7 @@ function showWelcome() {
 
 function renderGuide() {
   const g = guide(); const p = state.profile;
-  if (!state.data) { $('#officeName').textContent = p.officeName || 'No file loaded'; $('#officeAv').textContent = initials(p.officeName || '') || '—'; }
+  if (!state.data) { $('#officeName').textContent = p.officeName || 'No file loaded'; $('#officeAv').textContent = initials(p.officeName || '') || '-'; }
   const steps = [
     { done: !!p.officeName, t: 'Name your office', b: 'So the dashboard is labelled for your electorate.', act: `<button class="btn" data-g="name">${p.officeName ? 'Change' : 'Set name'}</button>` },
     { done: !!g.tour, t: 'Try the sample and take the tour', b: 'Loads 18,000 fictional electors and points out the four parts of the dashboard. About three minutes.', act: `<button class="btn ${g.tour ? '' : 'primary'}" data-g="tour">${g.tour ? 'Take it again' : 'Start the tour'}</button>` },
