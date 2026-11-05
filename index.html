@@ -95,7 +95,7 @@ h1{font-size:30px;margin:6px 0 8px;letter-spacing:-.015em;line-height:1.15}
 
 .card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px;box-shadow:0 1px 2px rgba(16,24,40,.04),0 1px 3px rgba(16,24,40,.03)}
 .card h2{font-size:18px;margin:2px 0 2px} .card .sub{color:var(--muted);font-size:13px}
-.period{margin-top:18px;display:grid;grid-template-columns:160px 1fr auto auto;gap:28px;align-items:center}
+.period{margin-top:18px;display:grid;grid-template-columns:150px 1fr auto auto auto;gap:28px;align-items:center}
 .period .lbl b{display:block;font-size:17px}
 .slider{position:relative;padding:20px 32px 30px}
 .slider .track{height:4px;background:var(--line);border-radius:2px;position:relative}
@@ -298,6 +298,14 @@ table.plain{width:100%;border-collapse:collapse;font-size:13px} table.plain td,t
 .tmrow.sel{background:var(--blue-l);border-radius:8px}
 @media (max-width:1000px){.hero{flex-wrap:wrap}.hero .stats{width:100%;justify-content:flex-start;padding-top:14px;border-top:1px solid var(--line)}}
 @media (max-width:640px){.tchart{gap:4px}.tv,.tl{font-size:10px}.vsep{display:none}.cardhead{flex-wrap:wrap;gap:6px}.cardhead>div[style*="text-align:right"]{text-align:left!important}.tmrow i{background-image:linear-gradient(rgba(0,0,0,.04),rgba(0,0,0,.04))}.tm:not(.tm-empty){display:none!important}.tmlist{display:block}.hide-sm{display:none}h1{font-size:24px}.lede{font-size:14px}}
+.offonly{display:flex;align-items:center;gap:9px;cursor:pointer;font-size:12.5px;min-width:190px}
+.offonly input{position:absolute;opacity:0;width:0;height:0}
+.offonly .sw{width:32px;height:18px;border-radius:9px;background:#CBD3DF;position:relative;flex:none;transition:background .15s}
+.offonly .sw::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .15s;box-shadow:0 1px 2px rgba(0,0,0,.2)}
+.offonly input:checked+.sw{background:var(--blue)} .offonly input:checked+.sw::after{transform:translateX(14px)}
+.offonly input:focus-visible+.sw{outline:2px solid var(--blue);outline-offset:2px}
+.offonly b{display:block;font-size:12.5px} .offonly small{display:block;color:var(--muted);font-size:11.5px}
+.offonly.off{cursor:not-allowed;opacity:.6}
 </style>
 </head>
 <body>

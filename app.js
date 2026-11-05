@@ -77,7 +77,33 @@ const CHANNEL_CODES = {
   VM: ['Phone', 'in'], IS: ['SMS', 'in'], OS: ['SMS', 'out'], IL: ['Letter', 'in'], OL: ['Letter', 'out'],
   DK: ['Doorknock', 'out'], IM: ['In person', 'in'], OM: ['In person', 'out'],
 };
-const CODE_RE = new RegExp('\\b(' + Object.keys(CHANNEL_CODES).map(c => c.replace(' ', '\\s+')).join('|') + ')\\b');
+// Plain-English fallbacks for notes that carry no code. Fixed words, no AI.
+const CODE_CHANNELS = ['Email', 'Phone', 'SMS', 'Letter', 'In person', 'Doorknock', 'Other'];
+const CODE_KEYWORDS = { 'WALK IN': ['In person', 'in'], OUTGOING: ['Other', 'out'], INCOMING: ['Other', 'in'] };
+const normCode = k => String(k).toUpperCase().replace(/[\s-]+/g, '');
+/* The codes an office uses differ, so the built-in list is extended by the
+   office's own answers (saved in the office profile). */
+function codeTable(profile) {
+  const map = { ...CHANNEL_CODES, ...CODE_KEYWORDS };
+  for (const [k, v] of Object.entries((profile && profile.codes) || {})) if (Array.isArray(v)) map[k] = v;
+  const keys = Object.keys(map).sort((a, b) => b.length - a.length);
+  const byNorm = {}; for (const k of keys) byNorm[normCode(k)] = k;
+  const re = new RegExp('(?:^|[^A-Z0-9])(' + keys.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[\s-]+/g, '[\\s-]?')).join('|') + ')(?![A-Z0-9])');
+  const alt = keys.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[\s-]+/g, '[\\s-]?')).join('|');
+  const leadRe = new RegExp('^\\s*\\d{1,2}/\\d{1,2}/\\d{4}\\s*[-–:]?\\s*(' + alt + ')(?![A-Z0-9])');
+  return { map, re, leadRe, byNorm, ignore: new Set(Object.entries((profile && profile.codes) || {}).filter(([, v]) => v === 'ignore').map(([k]) => k)) };
+}
+function noteCode(note, T) {
+  const up = String(note).toUpperCase();
+  // 1. A known code straight after the date wins.
+  const lead = up.match(T.leadRe); if (lead) { const k = T.byNorm[normCode(lead[1])]; if (k) return { key: k }; }
+  // 2. An unknown short code straight after the date, e.g. "12/03/2025 - PH ...": capitals only, up to 6 characters.
+  const u = String(note).match(/^\s*\d{1,2}\/\d{1,2}\/\d{4}\s*[-–:]?\s*([A-Z][A-Z0-9/&]{0,5})(?![A-Za-z0-9])/);
+  if (u && !T.ignore.has(u[1])) return { unknown: u[1] };
+  // 3. Otherwise the first known code or keyword anywhere in the note.
+  const m = up.match(T.re); if (m) { const k = T.byNorm[normCode(m[1])]; if (k) return { key: k }; }
+  return {};
+}
 const CLASSES = [
   ['contact', 'Counts as contact'], ['admin', 'Admin (not contact)'], ['community', 'Community'],
   ['religion', 'Religion'], ['housing', 'Housing'], ['issue', 'Issue or interest'], ['ignore', 'Ignore'],
@@ -116,6 +142,8 @@ function saveProfile() {
   const g = state.profile.guide || {};
   const clean = { version: state.profile.version, officeName: String(state.profile.officeName || '').slice(0, 60), values: {}, guide: { ack: !!g.ack, tour: !!g.tour, export: !!g.export, own: !!g.own } };
   for (const [k, v] of Object.entries(state.profile.values)) clean.values[k] = { cls: v.cls, value: v.value || '' };
+  clean.codes = {};
+  for (const [k, v] of Object.entries(state.profile.codes || {})) if (/^[A-Z][A-Z0-9/&]{0,5}$/.test(k) && (v === 'ignore' || (Array.isArray(v) && CODE_CHANNELS.includes(v[0]) && ['in', 'out'].includes(v[1])))) clean.codes[k] = v;
   try { localStorage.setItem(PROFILE_KEY, JSON.stringify(clean)); return true; } catch (e) { return false; }
 }
 
@@ -278,7 +306,7 @@ function runGate(rows, fileName) {
   const unclassified = new Map(); // value -> {cols:Set, people:count}
   let datedContacts = 0, undatedContacts = 0, adminSkipped = 0, maxDay = -Infinity;
   let persuasionDropped = 0;
-  const noteNoCode = { n: 0 };
+  const T = codeTable(state.profile); const unknownCodes = new Map();
 
   const vals = (row, cols) => cols.map(c => String(row[c] ?? '').trim()).filter(Boolean);
   for (let r = 1; r < rows.length; r++) {
@@ -329,12 +357,12 @@ function runGate(rows, fileName) {
       // From the note we keep only the date at the start and the first channel code.
       const dm = note.match(/^\s*(\d{1,2}\/\d{1,2}\/\d{4})/);
       const d = dm ? parseDate(dm[1]) : null;
-      const cm = note.toUpperCase().match(CODE_RE);
-      const code = cm ? cm[1].replace(/\s+/g, ' ') : null;
+      const nc = note.trim() ? noteCode(note, T) : {};
+      const code = nc.key || null;
       const isContact = code || ct === 'contact' || cg === 'contact';
       if (!isContact) continue;
-      if (note.trim() && !code) noteNoCode.n++;
-      const [ch, dir] = code ? CHANNEL_CODES[code] : ['Other', null];
+      if (nc.unknown) unknownCodes.set(nc.unknown, (unknownCodes.get(nc.unknown) || 0) + 1);
+      const [ch, dir] = code ? T.map[code] : ['Other', null];
       const t = d ? dayNum(d) : null;
       if (t != null && t <= dayNum(today)) { maxDay = Math.max(maxDay, t); datedContacts++; } else undatedContacts++;
       contacts.push({ t: t != null && t <= dayNum(today) ? t : null, ch, dir });
@@ -369,7 +397,7 @@ function runGate(rows, fileName) {
     else if (r.role === 'ccTopics') { sHead.push(h); sCols.push(row => splitRunTogether(row[i]).filter(v => dropIgnored(v)).join('; ')); }
     else if (r.role === 'note') {
       sHead.push(`Interaction Details Set ${r.set}`);
-      sCols.push(row => { const n = String(row[i] ?? ''); const dm = n.match(/^\s*(\d{1,2}\/\d{1,2}\/\d{4})/); const cm = n.toUpperCase().match(CODE_RE); return [dm ? dm[1] : '', cm ? cm[1].replace(/\s+/g, ' ') : ''].filter(Boolean).join(' - '); });
+      sCols.push(row => { const n = String(row[i] ?? ''); const dm = n.match(/^\s*(\d{1,2}\/\d{1,2}\/\d{4})/); const nc = n.trim() ? noteCode(n, T) : {}; return [dm ? dm[1] : '', nc.key || nc.unknown || ''].filter(Boolean).join(' - '); });
     }
     else if (['id', 'gender', 'community', 'religion', 'housing', 'suburb', 'postcode', 'age', 'issues'].includes(r.role)) { sHead.push(h); sCols.push(row => row[i]); }
     else if (['email', 'mobile', 'phone'].includes(r.role)) { sHead.push('Has ' + r.role); sCols.push(row => truthy(row[i]) ? 'Y' : ''); }
@@ -394,15 +422,20 @@ function runGate(rows, fileName) {
   if (mode === 'dated' && undatedContacts) report.warnings.push({ lvl: 'warn', title: `${fmt(undatedContacts)} contacts have no date`, body: 'They count towards "ever contacted" but cannot be placed in a time period.' });
   { const never = people.filter(p => !p.contacts.length).length;
     if (people.length >= 50 && never / people.length < 0.1) report.warnings.push({ lvl: 'warn', title: `Only ${pct(never, people.length)}% of people in this file have never been contacted`, body: 'This may be an export of contacted people only. The dashboard compares contact against everyone on the roll, so export the whole electorate, including people the office has never contacted, or every share and reach figure will be overstated.' }); }
-  if (!I.id.length) report.warnings.push({ lvl: 'warn', title: 'No ID column', body: 'Target-list downloads need a Campaign Central ID column. Everything else works.' });
+  if (!I.id.length) report.warnings.push({ lvl: 'warn', title: 'No ID column', body: 'Target-list downloads need the ID column from your CRM (for example Campaign Central). Everything else works.' });
+  { const tk = ['community', 'religion', 'housing', 'issues'].filter(k => dims.includes(k));
+    if (tk.length && people.length) { const tc = Math.round(tk.reduce((s, k) => s + people.filter(p => !p.attrs[k].includes(UNTAGGED)).length / people.length, 0) / tk.length * 100);
+      report.warnings.push({ lvl: 'info', title: `Tag completeness: ${tc}%`, body: `The average share of people with a ${tk.map(k => DIM_LABEL[k].toLowerCase()).join(', ')} tag. People without one are counted as "Untagged".` }); } }
   if (!hasReach) report.warnings.push({ lvl: 'info', title: 'No email, mobile or phone columns', body: 'Reachability is not available for this file.' });
   if (persuasionDropped) report.warnings.push({ lvl: 'bad', title: `${fmt(persuasionDropped)} persuasion or targeting tags removed`, body: 'Voting-intention and targeting tags are never read, counted or kept, even in memory.' });
+  if (unknownCodes.size) { const top = [...unknownCodes.entries()].filter(([, n]) => n >= 3).sort((a, b) => b[1] - a[1]); if (top.length) report.warnings.push({ lvl: 'warn', title: `${top.length} contact code${top.length > 1 ? 's' : ''} not recognised: ${top.slice(0, 6).map(([c]) => c).join(', ')}${top.length > 6 ? '…' : ''}`, body: 'Notes starting with these codes still count as contact, but who started it is unknown until you say what each code means in the next step.' }); }
   if (adminSkipped) report.warnings.push({ lvl: 'info', title: `${fmt(adminSkipped)} admin records excluded`, body: 'Record adjustments and contact-detail changes are not counted as contact.' });
 
   return {
-    people, report, mode, asOfDay, dims, hasIds: I.id.length > 0, hasReach, hasEnrol,
+    people, report, mode, asOfDay, dims, hasIds: I.id.length > 0, idHeader: I.id.length ? head[I.id[0]] : null, hasReach, hasEnrol,
     unclassified: [...unclassified.entries()].map(([value, u]) => ({ value, cols: [...u.cols], people: u.people })).sort((a, b) => b.people - a.people),
     datedContacts, undatedContacts, importedAt: new Date(), fileName, sanitized,
+    unknownCodes: [...unknownCodes.entries()].filter(([, n]) => n >= 3).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([code, n]) => ({ code, n })),
   };
 }
 
@@ -412,6 +445,9 @@ function windowFor(periodIdx, shift = 0) {
   const end = d.asOfDay - shift * days; return [end - days + 1, end];
 }
 function inWin(c, w) { return w === null ? true : c.t != null && c.t >= w[0] && c.t <= w[1]; }
+const counted = (c, w) => inWin(c, w) && (!state.officeOnly || c.dir === 'out');
+const DIR_MIN = 0.8;
+function dirCoverage(w) { let all = 0, known = 0; for (const p of state.data.people) for (const c of p.contacts) if (inWin(c, w)) { all++; if (c.dir) known++; } return all ? known / all : 0; }
 
 function aggregate(dimKey, w) {
   const d = state.data; const groups = new Map();
@@ -420,7 +456,7 @@ function aggregate(dimKey, w) {
   for (const p of d.people) {
     let n = 0, off = 0, con = 0, lastOff = null; const ch = {};
     for (const c of p.contacts) {
-      if (!inWin(c, w)) continue;
+      if (!counted(c, w)) continue;
       n++; ch[c.ch] = (ch[c.ch] || 0) + 1;
       if (c.dir === 'out') { off++; if (c.t != null && (lastOff == null || c.t > lastOff)) lastOff = c.t; } else if (c.dir === 'in') con++;
     }
@@ -446,16 +482,19 @@ function aggregate(dimKey, w) {
   for (const g of list) {
     g.small = g.e < MIN_CELL;
     g.eShare = g.e / eSum; g.cShare = cSum ? g.c / cSum : 0;
-    g.fs = cSum ? g.cShare / g.eShare : null;
+    g.cfs = cSum ? g.cShare / g.eShare : null; // share of contacts vs share of electors (background only)
     g.reachPct = g.e ? g.r / g.e : 0;
+    // Fair share counts people: the group's reach rate against the electorate's.
+    g.fs = overallReach > 0 ? g.reachPct / overallReach : null;
     g.status = g.fs == null ? 'n' : g.fs < 0.8 ? 'u' : g.fs > 1.25 ? 'o' : 'b';
-    g.lowReach = !g.small && g.fs != null && g.fs >= 0.8 && overallReach > 0 && g.reachPct < overallReach * 0.5;
-    g.score = g.fs == null ? 0 : Math.round(100 * Math.min(1, g.fs));
+    g.concentrated = !g.small && g.cfs != null && g.cfs >= 1 && g.fs != null && g.fs < 0.6;
   }
   // Balance score: 100 means contact is spread across groups in exact proportion to electors.
   const visible = list.filter(g => !g.small);
-  const balance = cSum ? Math.round(100 * (1 - 0.5 * list.reduce((s, g) => s + Math.abs(g.cShare - g.eShare), 0))) : 0;
-  return { list, visible, N, C, R, tot, balance, overallReach, smallCount: list.length - visible.length };
+  // Headline: share of electors who sit in at least one underserved group on this tab.
+  const uset = new Set(visible.filter(g => g.status === 'u' && g.name !== UNTAGGED && g.name !== 'Unknown').map(g => g.name));
+  let uPeople = 0; if (uset.size) for (const p of d.people) if (p.attrs[dimKey].some(v => uset.has(v))) uPeople++;
+  return { list, visible, N, C, R, tot, underShare: N ? uPeople / N : 0, overallReach, smallCount: list.length - visible.length };
 }
 const periodWindow = () => state.data.mode === 'dated' ? windowFor(state.period) : null;
 const prevWindow = () => state.data.mode === 'dated' ? windowFor(state.period, 1) : null;
@@ -491,7 +530,7 @@ function render() {
   const main = $('#main');
   const p = state.profile;
   $('#profVer').textContent = 'v' + p.version;
-  const uq = state.data ? state.data.unclassified.length : 0;
+  const uq = state.data ? state.data.unclassified.length + (state.data.unknownCodes || []).length : 0;
   $('#uqBadge').textContent = uq; $('#uqBadge').classList.toggle('hidden', !uq);
   document.querySelectorAll('[data-nav=dashboard],[data-nav=guide]').forEach(b => b.classList.toggle('on', (b.dataset.nav === 'guide') === (state.view === 'guide')));
   if (state.view === 'guide') { main.innerHTML = renderGuide(); bindGuide(); return; }
@@ -507,7 +546,7 @@ function renderEmpty() {
   <div class="wrap"><div class="empty">
     <div class="kicker">Audience coverage · trial build</div>
     <h1>See who you're not talking to, and how to reach them.</h1>
-    <p class="lede">Offices end up hearing from the same people. This shows who you've been speaking to too much, who's been missing out, and how to reach the people you've missed on the issues they care about. Load a de-identified Campaign Central export to start.</p>
+    <p class="lede">Offices end up hearing from the same people. This shows who you've been speaking to too much, who's been missing out, and how to reach the people you've missed on the issues they care about. Load a de-identified export from your CRM (for example Campaign Central) to start.</p>
     <div class="drop" id="drop" style="margin-top:22px">
       <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#2E6FE0" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
       <h2>Drop your export here</h2>
@@ -540,20 +579,19 @@ function renderDashboard() {
   const d = state.data; const w = periodWindow(); const per = PERIODS[state.period];
   if (!d.dims.includes(state.dim)) state.dim = d.dims[0];
   const A = aggregate(state.dim, w);
+  const dcov = dirCoverage(w); if (dcov < DIR_MIN) state.officeOnly = false;
   const prev = d.mode === 'dated' ? aggregate(state.dim, prevWindow()) : null;
   const vis = A.visible.filter(g => g.name !== 'Unknown');
-  const counts = { u: 0, o: 0, b: 0, l: 0 };
+  const counts = { u: 0, o: 0, b: 0 };
   // status counts across every dimension, like the mockup's summary pills
   const allGroups = [];
   for (const k of d.dims) { const a = k === state.dim ? A : aggregate(k, w); for (const g of a.visible) if (g.name !== 'Unknown' && g.name !== UNTAGGED) allGroups.push(g); }
-  for (const g of allGroups) { counts[g.status] = (counts[g.status] || 0) + 1; if (g.lowReach) counts.l++; }
+  for (const g of allGroups) { counts[g.status] = (counts[g.status] || 0) + 1; }
   if (!state.sel || !A.visible.find(g => g.name === state.sel)) {
     const cand = vis.filter(g => g.status === 'u').sort((a, b) => b.e - a.e)[0] || vis.sort((a, b) => b.e - a.e)[0];
     state.sel = cand ? cand.name : null;
   }
-  const tagDims = ['community', 'religion', 'housing', 'issues'].filter(k => d.dims.includes(k));
-  const completeness = tagDims.length ? Math.round(tagDims.reduce((s, k) => s + d.people.filter(p => !p.attrs[k].includes(UNTAGGED)).length / d.people.length, 0) / tagDims.length * 100) : null;
-  const delta = prev && prev.C ? A.balance - prev.balance : null;
+  const delta = prev && prev.C ? Math.round(A.underShare * 100) - Math.round(prev.underShare * 100) : null;
   const officeShare = A.tot.office + A.tot.constituent ? A.tot.office / (A.tot.office + A.tot.constituent) : 0;
   const asOf = fromDay(d.asOfDay);
   const officeTitle = d.officeName;
@@ -572,20 +610,19 @@ function renderDashboard() {
     ${d.people.length < SMALL_FILE ? `<div class="banner"><b>Small file: ${fmt(d.people.length)} people.</b> One contact can swing a group's score a lot, and most groups will be under the 10-elector limit and hidden. Read the patterns as examples, not conclusions.</div>` : ''}
     <div class="hero">
       <div>
-        <div class="kicker">Audience coverage · ${esc(officeTitle)} · ${esc(d.mode === 'dated' ? per.long : 'All contact on record')}</div>
+        <div class="kicker">Audience coverage · ${esc(officeTitle)} · ${esc(d.mode === 'dated' ? per.long : 'All contact on record')}${state.officeOnly ? ' · office-started contact only' : ''}</div>
         <h1>See who you're not talking to, and how to reach them.</h1>
         <p class="lede">Offices end up hearing from the same people. This shows who you've been speaking to too much, who's been missing out, and how to reach the people you've missed on the issues they care about.</p>
         <div class="pills">
           <span class="pill u"><i></i>${counts.u} underserved</span><span class="pill o"><i></i>${counts.o} overserved</span>
-          <span class="pill b"><i></i>${counts.b} balanced</span><span class="pill l"><i></i>${counts.l} low reach</span>
+          <span class="pill b"><i></i>${counts.b} balanced</span>
         </div>
       </div>
       <div class="stats">
-        ${completeness != null ? `<div class="stat"><div class="k">Tag completeness</div><div class="v">${completeness}<small>%</small></div><div class="s">${esc(tagDims.map(k => DIM_LABEL[k].toLowerCase()).join(', '))}</div></div><div class="vsep"></div>` : ''}
-        <div class="stat big" title="100 means the office's contact is spread across ${esc(DIM_LABEL[state.dim].toLowerCase())} groups in exact proportion to the number of electors in each.">
-          <div class="k">Coverage balance</div><div class="v">${A.visible.length ? A.balance : '–'}<small>${A.visible.length ? '/100' : ''}</small></div>
-          <div class="s">across ${esc(DIM_LABEL[state.dim].toLowerCase())} · ${!A.visible.length ? 'groups too small to score' : delta == null ? 'no earlier period' : (delta >= 0 ? '+' : '−') + Math.abs(delta) + ' vs previous period'}</div>
-          <div class="s" style="max-width:250px;margin-left:auto;margin-top:4px;color:var(--faint)">100 = contact spread in exact proportion to the number of electors in each group</div>
+        <div class="stat big" title="Share of electors in at least one ${esc(DIM_LABEL[state.dim].toLowerCase())} group reached at under 0.8× the electorate's rate.">
+          <div class="k">Electors in underserved groups</div><div class="v" style="color:${A.underShare > 0.25 ? 'var(--orange)' : 'var(--ink)'}">${A.visible.length ? Math.round(A.underShare * 100) : '–'}<small>${A.visible.length ? '%' : ''}</small></div>
+          <div class="s">across ${esc(DIM_LABEL[state.dim].toLowerCase())} · ${!A.visible.length ? 'groups too small to score' : delta == null ? 'no earlier period' : delta === 0 ? 'no change vs previous period' : `${delta > 0 ? '+' : '−'}${Math.abs(delta)} pts vs previous period`}</div>
+          <div class="s" style="max-width:260px;margin-left:auto;margin-top:4px;color:var(--faint)">People in groups reached at under 0.8× the electorate's rate</div>
         </div>
       </div>
     </div>
@@ -597,23 +634,26 @@ function renderDashboard() {
         <div class="stops">${PERIODS.map((p, i) => `<button class="stop ${i < state.period ? 'past' : ''} ${i === state.period ? 'on' : ''}" data-period="${i}" style="left:${i / (PERIODS.length - 1) * 100}%"><span class="dot"></span>${p.short}</button>`).join('')}</div>
       </div>
       <div class="mini"><div class="k">CONTACTS</div><b>${fmt(A.C)}</b><span>${fmt(A.R)} people reached (${pct(A.R, A.N)}%)</span></div>
-      ${A.tot.office + A.tot.constituent === 0 ? `<div class="mini" style="text-align:left"><div class="k">WHO STARTED IT</div><span>Not recorded in this file</span></div>` : `
+      ${state.officeOnly ? '' : A.tot.office + A.tot.constituent === 0 ? `<div class="mini" style="text-align:left"><div class="k">WHO STARTED IT</div><span>Not recorded in this file</span></div>` : `
       <div class="mini" style="text-align:left"><div class="k">WHO STARTED IT</div>
         <div class="split"><i style="width:${officeShare * 100}%;background:var(--blue)"></i><i style="width:${(1 - officeShare) * 100}%;background:var(--purple)"></i></div>
         <div class="splitlbl"><span><b style="font-size:12px;display:inline;color:var(--blue-d)">${Math.round(officeShare * 100)}%</b> office</span><span><b style="font-size:12px;display:inline;color:var(--purple)">${100 - Math.round(officeShare * 100)}%</b> constituent</span></div>
       </div>`}
+      <label class="offonly ${dcov < DIR_MIN ? 'off' : ''}" title="${dcov < DIR_MIN ? `Who started the contact is recorded for only ${Math.round(dcov * 100)}% of contacts in this period. It needs ${Math.round(DIR_MIN * 100)}% before this filter is reliable.` : `Who started the contact is recorded for ${Math.round(dcov * 100)}% of contacts in this period.`}">
+        <input type="checkbox" id="offOnly" ${state.officeOnly ? 'checked' : ''} ${dcov < DIR_MIN ? 'disabled' : ''}><span class="sw"></span>
+        <span><b>Office-started contact only</b><small>${dcov < DIR_MIN ? `Not enough recorded (${Math.round(dcov * 100)}% of contacts)` : `Recorded for ${Math.round(dcov * 100)}% of contacts`}</small></span></label>
     </div>
 
     <div class="grid2">
       <div class="card" id="tmCard">
-        <div class="cardhead"><div><div class="stepk"><span>1</span>Who you're missing</div><h2>Attention by group</h2><div class="sub">Box size = electors · colour = share of contacts vs share of electors</div></div><div style="text-align:right"><div class="note">From the roll · every elector counted</div>${helpBtn('treemap')}</div></div>
+        <div class="cardhead"><div><div class="stepk"><span>1</span>Who you're missing</div><h2>Attention by group</h2><div class="sub">Box size = electors · colour = how many of them you've reached, against the electorate's rate</div></div><div style="text-align:right"><div class="note">From the roll · every elector counted</div>${helpBtn('treemap')}</div></div>
         <div class="tabs">${d.dims.map(k => `<button class="tab ${k === state.dim ? 'on' : ''}" data-dim="${k}">${DIM_LABEL[k]}</button>`).join('')}</div>
         ${renderTreemap(A)}
         <div class="legend">
           <span style="color:var(--orange);font-weight:600">Underserved</span>
           <span class="sw">${['#E85D2F', '#F08B5B', '#F8C9AC', '#EEF1F5', '#DBE7FA', '#8FB1EE', '#2E6FE0'].map(c => `<i style="background:${c}"></i>`).join('')}</span>
           <span style="color:var(--blue-d);font-weight:600">Overserved</span>
-          <span style="display:inline-flex;align-items:center;gap:5px;color:var(--amber);font-weight:600"><i style="width:8px;height:8px;border-radius:50%;background:var(--amber-m);display:inline-block"></i>Low reach</span>
+          <span style="display:inline-flex;align-items:center;gap:5px;color:var(--amber);font-weight:600"><i style="width:8px;height:8px;border-radius:50%;background:var(--amber-m);display:inline-block"></i>Contact landing on few people</span>
           <span class="note">People count in every group they're tagged with. Untagged people form their own group.${A.smallCount ? ` ${A.smallCount} group${A.smallCount > 1 ? 's' : ''} under ${MIN_CELL} electors hidden.` : ''}</span>
         </div>
       </div>
@@ -646,14 +686,14 @@ function renderTreemap(A) {
     return `<button class="tile ${dark ? 'dark' : ''} ${g.name === state.sel && !g.other ? 'sel' : ''}" ${g.other ? '' : `data-group="${esc(g.name)}"`} style="left:${r.x / W * 100}%;top:${r.y / H * 100}%;width:${r.w / W * 100}%;height:${r.h / H * 100}%;background:${bg}" title="${esc(g.name)}: ${fmt(g.e)} electors${g.other ? '' : ` · ${Math.round(g.reachPct * 100)}% reached · ${fsTxt(g.fs)} fair share`}">
       ${med ? `<b>${esc(g.name)}</b><div class="e">${fmt(g.e)} electors</div>` : ''}
       ${big && !g.other ? `<div class="d">${Math.round(g.reachPct * 100)}% reached · ${fsTxt(g.fs)} fair share</div><span class="st">${STATUS_TXT[g.status].toUpperCase()}</span>` : ''}
-      ${g.lowReach ? '<span class="lr" title="Low reach"></span>' : ''}
+      ${g.concentrated ? '<span class="lr" title="Lots of contact, few people reached"></span>' : ''}
     </button>`;
   }).join('')}</div>${renderTmList(A)}`;
 }
 
 function renderTmList(A) {
   const items = A.visible.slice().sort((a, b) => b.e - a.e);
-  return `<div class="tmlist">${items.map(g => { const [bg] = fsColour(g.fs); return `<button class="tmrow ${g.name === state.sel ? 'sel' : ''}" data-group="${esc(g.name)}"><i style="background:${bg}"></i><span class="n"><b>${esc(g.name)}</b><small>${fmt(g.e)} electors · ${Math.round(g.reachPct * 100)}% reached${g.lowReach ? ' · low reach' : ''}</small></span><span class="f">${fsTxt(g.fs)}<small class="st-${g.status}">${STATUS_TXT[g.status]}</small></span></button>`; }).join('')}</div>`;
+  return `<div class="tmlist">${items.map(g => { const [bg] = fsColour(g.fs); return `<button class="tmrow ${g.name === state.sel ? 'sel' : ''}" data-group="${esc(g.name)}"><i style="background:${bg}"></i><span class="n"><b>${esc(g.name)}</b><small>${fmt(g.e)} electors · ${Math.round(g.reachPct * 100)}% reached${g.concentrated ? ' · contact on few people' : ''}</small></span><span class="f">${fsTxt(g.fs)}<small class="st-${g.status}">${STATUS_TXT[g.status]}</small></span></button>`; }).join('')}</div>`;
 }
 function renderSegment(A) {
   const d = state.data; const g = A.list.find(x => x.name === state.sel);
@@ -668,9 +708,10 @@ function renderSegment(A) {
     <div style="margin-top:4px">${helpBtn('segment')}</div>
     <h2 style="margin-top:8px">${esc(g.name)}</h2>
     <div class="sub">${esc(DIM_LABEL[g.dim])} · ${fmt(g.e)} electors (${(g.eShare * 100).toFixed(1)}%)</div>
-    <div class="scorebox"><span class="n" style="color:${g.status === 'u' ? 'var(--orange)' : g.status === 'o' ? 'var(--blue-d)' : 'var(--green)'}">${g.score}</span><span class="note">/100 coverage</span><span class="fs" style="color:${g.status === 'u' ? 'var(--orange)' : 'var(--ink2)'}">${fsTxt(g.fs)} fair share</span></div>
-    <div class="note">${(g.cShare * 100).toFixed(1)}% of contacts · ${(g.eShare * 100).toFixed(1)}% of electors</div>
-    <div class="reachline ${low ? 'low' : 'ok'}"><i></i>Reached ${Math.round(g.reachPct * 100)}% of electors in this group <span style="font-weight:500;opacity:.8">(electorate ${Math.round(A.overallReach * 100)}%)</span></div>
+    <div class="scorebox"><span class="n" style="color:${g.status === 'u' ? 'var(--orange)' : g.status === 'o' ? 'var(--blue-d)' : 'var(--green)'}">${fsTxt(g.fs)}</span><span class="note">fair share</span></div>
+    <div class="note" style="color:var(--ink2)">Reached <b>${Math.round(g.reachPct * 100)}%</b> of this group, against ${Math.round(A.overallReach * 100)}% across the electorate.</div>
+    ${g.dim === 'issues' ? '' : `<div class="note">${(g.cShare * 100).toFixed(1)}% of contacts · ${(g.eShare * 100).toFixed(1)}% of electors</div>`}
+    ${g.concentrated ? `<div class="reachline low"><i></i>Lots of contact, few people: ${fsTxt(g.cfs)} its share of contacts, but only ${Math.round(g.reachPct * 100)}% reached</div>` : ''}
     ${renderCares(g)}
     ${renderReachable(g, chs, chTotal)}
     <div class="sec">Their funnel</div>
@@ -685,7 +726,7 @@ function renderSegment(A) {
     <div class="mixl" style="justify-content:space-between"><span style="--c:var(--blue)">Office reached out ${Math.round(offPct * 100)}%</span><span style="--c:var(--purple)">Constituent came to us ${100 - Math.round(offPct * 100)}%</span></div>`}
     <div class="note" style="margin-top:10px">${g.lastOff != null ? `Last office-initiated contact · ${esc(fmtDate(fromDay(g.lastOff)))}${d.asOfDay - g.lastOff > 0 ? ` (${d.asOfDay - g.lastOff} day${d.asOfDay - g.lastOff === 1 ? '' : 's'} before the latest record)` : ''}` : 'No office-initiated contact in this period'}</div>
     <div style="margin-top:16px"><button class="btn primary block" data-target="${esc(g.dim)}|${esc(g.name)}" ${d.hasIds ? '' : 'disabled title="This file has no ID column"'}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>Download target list</button></div>
-    <div class="note" style="text-align:center;margin-top:6px">${d.hasIds ? `${fmt(notReached)} IDs not reached ${d.mode === 'dated' ? 'in this period' : 'yet'} · available while the file is open` : 'Needs a Campaign Central ID column'}</div>
+    <div class="note" style="text-align:center;margin-top:6px">${d.hasIds ? `${fmt(notReached)} IDs not reached ${d.mode === 'dated' ? 'in this period' : 'yet'} · available while the file is open` : 'Needs an ID column from your CRM'}</div>
   </div>`;
 }
 const MIN_ISSUE_BASE = 10;
@@ -753,7 +794,7 @@ function renderGap(allGroups) {
   const pos = fs => { const v = Math.log2(Math.max(0.125, Math.min(8, fs))); return v; }; // -3..3
   return `<div class="card gap">
     <div class="kicker" style="font-size:11px">Attention gap</div><h2>Overserved vs underserved</h2>
-    <div class="sub">Share of contacts vs share of electors, across every dimension. 1.0× is a fair share.</div>${helpBtn('gap')}
+    <div class="sub">Each group's reach rate against the electorate's, across every tab. 1.0× is a fair share.</div>${helpBtn('gap')}
     <div class="gaphead"><div></div><div><span>← less than fair share</span><span>more →</span></div><div></div></div>
     ${rows.map(g => {
       const v = pos(g.fs); const half = 50; const len = Math.abs(v) / 3 * half;
@@ -774,11 +815,11 @@ function renderHeatmap(w) {
   let Cg = aggregate(state.hmCol, w).visible.filter(g => g.name !== 'Unknown').sort((a, b) => b.e - a.e).slice(0, 8).map(g => g.name);
   if (state.hmCol === 'age') Cg = AGE_BRACKETS.filter(a => Cg.includes(a));
   // pair counts
-  const cell = {}; let N = 0, C = 0;
+  const cell = {}; let N = 0, Rn = 0;
   for (const p of d.people) {
-    let n = 0; for (const c of p.contacts) if (inWin(c, w)) n++;
-    N++; C += n;
-    for (const r of p.attrs[state.hmRow]) for (const c of p.attrs[state.hmCol]) { const k = r + '\u0000' + c; const x = cell[k] || (cell[k] = { e: 0, c: 0 }); x.e++; x.c += n; }
+    let n = 0; for (const c of p.contacts) if (counted(c, w)) n++;
+    N++; if (n) Rn++;
+    for (const r of p.attrs[state.hmRow]) for (const c of p.attrs[state.hmCol]) { const k = r + '\u0000' + c; const x = cell[k] || (cell[k] = { e: 0, r: 0 }); x.e++; if (n) x.r++; }
   }
   const opt = sel => d.dims.map(k => `<option value="${k}" ${k === sel ? 'selected' : ''}>${DIM_LABEL[k]}</option>`).join('');
   return `<div class="card hm">
@@ -789,8 +830,8 @@ function renderHeatmap(w) {
     ${R.map(r => `<tr><th class="rh" title="${esc(r)}">${esc(r)}</th>${Cg.map(c => {
       const x = cell[r + '\u0000' + c];
       if (!x || x.e < MIN_CELL) return '<td class="blank" title="Fewer than 10 electors">·</td>';
-      const fs = C ? (x.c / C) / (x.e / N) : null; const [bg, dark] = fsColour(fs);
-      return `<td style="background:${bg};color:${dark ? '#fff' : 'var(--ink)'}" title="${esc(r)} × ${esc(c)}: ${fmt(x.e)} electors, ${fmt(x.c)} contacts">${fs == null ? '–' : fs.toFixed(1)}</td>`;
+      const fs = Rn ? (x.r / x.e) / (Rn / N) : null; const [bg, dark] = fsColour(fs);
+      return `<td style="background:${bg};color:${dark ? '#fff' : 'var(--ink)'}" title="${esc(r)} × ${esc(c)}: ${fmt(x.e)} electors, ${pct(x.r, x.e)}% reached">${fs == null ? '–' : fs.toFixed(1)}</td>`;
     }).join('')}</tr>`).join('')}
     </tbody></table>
     <div class="note" style="margin-top:10px">Cells under ${MIN_CELL} electors are blanked so small groups can't be singled out.</div>
@@ -802,8 +843,8 @@ function renderMoves(allGroups, A) {
   const minE = Math.max(50, Math.round(d.people.length * 0.02));
   const pool = allGroups.filter(g => g.e >= minE && g.name !== UNTAGGED && g.name !== 'Unknown' && g.dim !== 'reach');
   const moves = []; const used = new Set();
-  const lr = pool.filter(g => g.lowReach).sort((a, b) => b.c - a.c)[0];
-  if (lr) { moves.push({ g: lr, kind: 'Low reach', icon: 'people', title: `${lr.name}: lots of contact, but only ${Math.round(lr.reachPct * 100)}% of people reached. Widen the net.`, body: `${fsTxt(lr.fs)} fair share of contacts ${per}, landing on the same ${fmt(lr.r)} people. ${fmt(lr.e - lr.r)} electors haven't heard from the office.` }); used.add(lr.dim); }
+  const lr = pool.filter(g => g.concentrated).sort((a, b) => b.c - a.c)[0];
+  if (lr) { moves.push({ g: lr, kind: 'Contact on few people', icon: 'people', title: `${lr.name}: lots of contact, but only ${Math.round(lr.reachPct * 100)}% of people reached. Widen the net.`, body: `${fsTxt(lr.cfs)} its share of contacts ${per}, landing on the same ${fmt(lr.r)} people. ${fmt(lr.e - lr.r)} electors haven't heard from the office.` }); used.add(lr.dim); }
   const under = pool.filter(g => g.status === 'u').sort((a, b) => (b.e * (1 - b.fs)) - (a.e * (1 - a.fs)));
   for (const g of under) {
     if (moves.length >= 3) break; if (used.has(g.dim)) continue; used.add(g.dim);
@@ -822,7 +863,7 @@ function renderMoves(allGroups, A) {
     phone: '<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/>',
   };
   return `<div style="margin-top:26px" id="movesBlock"><div class="stepk"><span>2</span>How to reach them</div><h2 style="font-size:19px;margin:6px 0 2px">Recommended next moves</h2>
-  <div class="sub" style="color:var(--muted);font-size:13px">The groups missing out most, and who in them to contact. Download the list, then pull it in Campaign Central. ${helpBtn('moves')}</div>
+  <div class="sub" style="color:var(--muted);font-size:13px">The groups missing out most, and who in them to contact. Download the list, then import it into your CRM. ${helpBtn('moves')}</div>
   <div class="moves">${moves.map(m => `<div class="card move">
     <div class="tag"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${ICON[m.icon]}</svg></span>${esc(m.kind)} · ${esc(DIM_LABEL[m.g.dim])}</div>
     <h3>${esc(m.title)}</h3><p>${esc(m.body)}</p>
@@ -833,6 +874,7 @@ function renderMoves(allGroups, A) {
 function bindDashboard() {
   const main = $('#main');
   main.querySelectorAll('[data-period]').forEach(b => b.onclick = () => { state.period = +b.dataset.period; render(); });
+  const oo = $('#offOnly'); if (oo) oo.onchange = () => { state.officeOnly = oo.checked; state.sel = null; render(); };
   main.querySelectorAll('[data-dim]').forEach(b => b.onclick = () => { state.dim = b.dataset.dim; state.sel = null; render(); });
   main.querySelectorAll('[data-group]').forEach(b => b.onclick = () => { state.sel = b.dataset.group; render(); if (window.innerWidth < 1180) { const seg = $('.card.seg'); if (seg) seg.scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth', block: 'start' }); } });
   main.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => { const [dim, name] = b.dataset.jump.split('|'); state.dim = dim; state.sel = name; render(); $('#tm').scrollIntoView({ behavior: 'smooth', block: 'center' }); });
@@ -844,16 +886,17 @@ function bindDashboard() {
   $('#closeFile').onclick = () => { state.data = null; state.sel = null; render(); toast('File cleared from this tab.'); };
 }
 
-/* Target list: Campaign Central IDs only, for people in the group not reached in the period. */
+/* Target list: CRM IDs only (same column heading as the export), for people in the group not reached in the period. */
 function downloadTargets(dim, name) {
   const d = state.data; if (!d.hasIds) return;
   const w = periodWindow();
-  const ids = d.people.filter(p => p.id && p.attrs[dim].includes(name) && !p.contacts.some(c => inWin(c, w))).map(p => p.id);
-  const blob = new Blob(['ID\r\n' + ids.map(i => /[",\r\n]/.test(i) ? `"${i.replace(/"/g, '""')}"` : i).join('\r\n') + '\r\n'], { type: 'text/csv' });
+  const ids = d.people.filter(p => p.id && p.attrs[dim].includes(name) && !p.contacts.some(c => counted(c, w))).map(p => p.id);
+  const hdr = /[",\r\n]/.test(d.idHeader || '') ? `"${d.idHeader.replace(/"/g, '""')}"` : (d.idHeader || 'ID');
+  const blob = new Blob([hdr + '\r\n' + ids.map(i => /[",\r\n]/.test(i) ? `"${i.replace(/"/g, '""')}"` : i).join('\r\n') + '\r\n'], { type: 'text/csv' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
   a.download = `target-list-${DIM_LABEL[dim].toLowerCase().replace(/\s+/g, '-')}-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.csv`;
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-  toast(`${fmt(ids.length)} IDs downloaded. Pull them in Campaign Central to build the list.`);
+  toast(`${fmt(ids.length)} IDs downloaded. Import them into your CRM (for example Campaign Central) to build the list.`);
 }
 
 /* ------------------------------------------------------------------ import flow */
@@ -871,7 +914,7 @@ async function startImport(file, opts = {}) {
     showGate();
   } catch (e) {
     modal(`<header><div><div class="kicker">New import</div><h2>That file couldn't be read</h2></div><button class="x">×</button></header>
-      <div class="body"><p>${esc(e.message || e)}</p><p class="note">Try saving it as CSV or .xlsx from Campaign Central or Excel.</p></div>`);
+      <div class="body"><p>${esc(e.message || e)}</p><p class="note">Try saving it as CSV or .xlsx from your CRM or Excel.</p></div>`);
   }
 }
 
@@ -925,21 +968,29 @@ function showGate() {
     ${r.warnings.filter(w => w.lvl !== 'bad').map(w => g(w.lvl === 'warn' ? 'warn' : 'info', w.lvl === 'warn' ? '!' : 'i', esc(w.title), esc(w.body))).join('')}
   </div>
   <p class="note" style="margin-top:14px">Rows stay in this tab's memory and disappear when you close the file or the tab. Nothing is saved or sent.</p></div>
-  <footer><span class="note">${d.unclassified.length ? `${d.unclassified.length} tag value${d.unclassified.length > 1 ? 's need' : ' needs'} classifying next` : 'All tag values recognised'}</span>
-  <div style="display:flex;gap:8px"><button class="btn" id="gCancel">Cancel</button><button class="btn primary" id="gNext">${d.unclassified.length ? 'Next' : 'Show dashboard'}</button></div></footer>`);
+  <footer><span class="note">${needsClassify(d) ? `${[d.unclassified.length ? `${d.unclassified.length} tag value${d.unclassified.length > 1 ? 's' : ''}` : '', d.unknownCodes.length ? `${d.unknownCodes.length} contact code${d.unknownCodes.length > 1 ? 's' : ''}` : ''].filter(Boolean).join(' and ')} to sort out next` : 'All tag values and contact codes recognised'}</span>
+  <div style="display:flex;gap:8px"><button class="btn" id="gCancel">Cancel</button><button class="btn primary" id="gNext">${needsClassify(d) ? 'Next' : 'Show dashboard'}</button></div></footer>`);
   $('#gCancel').onclick = () => { pending = null; closeModal(); };
-  $('#gNext').onclick = () => d.unclassified.length ? showClassify(false) : finishImport();
+  $('#gNext').onclick = () => needsClassify(d) ? showClassify(false) : finishImport();
 }
 
+const needsClassify = d => !!(d && (d.unclassified.length || (d.unknownCodes || []).length));
+const CODE_OPTS = [...['out', 'in'].flatMap(dir => CODE_CHANNELS.map(ch => [`${dir}|${ch}`, `${dir === 'out' ? 'Office started' : 'Constituent started'}: ${ch.toLowerCase()}`])), ['ignore', 'Not a contact code']];
 function showClassify(fromNav) {
   const d = fromNav ? state.data : pending;
   const list = d ? d.unclassified : [];
-  modal(`<header><div><div class="kicker">${fromNav ? 'Office profile' : 'New import · step 3 of 3'}</div><h2>Unclassified tags</h2></div><button class="x">×</button></header>
+  const codes = d ? (d.unknownCodes || []) : [];
+  modal(`<header><div><div class="kicker">${fromNav ? 'Office profile' : 'New import · step 3 of 3'}</div><h2>${codes.length && list.length ? 'Contact codes and tags' : codes.length ? 'Contact codes' : 'Unclassified tags'}</h2></div><button class="x">×</button></header>
   <div class="body">
+    ${codes.length ? `<div class="sec" style="margin-top:0">Contact codes we don't recognise</div>
+    <p class="note" style="margin-top:0">These short codes start interaction notes in this file but aren't in the standard list. Offices use different codes, and older records may use old ones. Say what each means so contact can be split into office-started and constituent-started. Saved to the office profile on this computer.</p>
+    ${codes.map((u, i) => `<div class="uq"><div><b>${esc(u.code)}</b><span>starts ${fmt(u.n)} notes</span></div>
+      <select data-cq="${i}"><option value="">Leave unknown</option>${CODE_OPTS.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></div>`).join('')}
+    ${list.length ? '<div class="sec">Tag values</div>' : ''}` : ''}
     ${list.length ? `<p class="note" style="margin-top:0">These tag values aren't in office profile v${state.profile.version} yet. Tell us what each one means; the answer is saved to the profile on this computer for future imports. Only short tag values are listed; free text is never shown.</p>
     ${list.map((u, i) => `<div class="uq"><div><b>${esc(u.value)}</b><span>found in ${esc(u.cols.join(', '))} · ${fmt(u.people)} electors</span></div>
       <select data-uq="${i}"><option value="">Leave unclassified</option>${CLASSES.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
-      <input data-uqv="${i}" placeholder="Group name" class="hidden" value="${esc(u.value)}"></div>`).join('')}` : '<p>Nothing to classify. Every tag value in the open file is recognised.</p>'}
+      <input data-uqv="${i}" placeholder="Group name" class="hidden" value="${esc(u.value)}"></div>`).join('')}` : (codes.length ? '' : '<p>Nothing to classify. Every tag value and contact code in the open file is recognised.</p>')}
   </div>
   <footer><span class="note">Saved answers contain no personal information.</span><div style="display:flex;gap:8px">${fromNav ? '' : '<button class="btn" id="cSkip">Skip for now</button>'}<button class="btn primary" id="cSave">${fromNav ? 'Save' : 'Save and show dashboard'}</button></div></footer>`);
   document.querySelectorAll('[data-uq]').forEach(s => s.onchange = () => { const inp = document.querySelector(`[data-uqv="${s.dataset.uq}"]`); inp.classList.toggle('hidden', !['community', 'religion', 'housing', 'issue'].includes(s.value)); });
@@ -950,6 +1001,11 @@ function showClassify(fromNav) {
       if (!s.value) return; const u = list[+s.dataset.uq];
       const v = document.querySelector(`[data-uqv="${s.dataset.uq}"]`).value.trim().slice(0, 60);
       state.profile.values[u.value] = { cls: s.value, value: v || u.value }; n++;
+    });
+    document.querySelectorAll('[data-cq]').forEach(s => {
+      if (!s.value) return; const u = codes[+s.dataset.cq];
+      state.profile.codes = state.profile.codes || {};
+      state.profile.codes[u.code] = s.value === 'ignore' ? 'ignore' : s.value.split('|').reverse(); n++;
     });
     if (n) { state.profile.version++; const ok = saveProfile(); toast(ok ? `Office profile updated to v${state.profile.version}.` : `Profile updated for this session (this browser blocks saving).`); }
     if (fromNav) { if (n && state.data) reprocess(); closeModal(); render(); }
@@ -1011,6 +1067,8 @@ function showProfile() {
     <table class="plain"><tbody>${DEFAULT_RULES.map(r => `<tr><td>${esc(r.note)}</td><td class="mono" style="font-size:11px;color:var(--muted)">${esc(r.re)}</td></tr>`).join('')}</tbody></table>
     <div class="sec">Channel codes read from interaction notes</div>
     <div class="cols">${Object.entries(CHANNEL_CODES).map(([k, [ch, dir]]) => `<code>${esc(k)} = ${esc(ch)}, ${dir === 'in' ? 'constituent' : 'office'}</code>`).join('')}</div>
+    <p class="note">If a note has no code, the words "walk in", "incoming" and "outgoing" are used instead.</p>
+    ${Object.keys(state.profile.codes || {}).length ? `<div class="sec">This office's own codes</div><div class="cols">${Object.entries(state.profile.codes).map(([k, v]) => `<code>${esc(k)} = ${v === 'ignore' ? 'not a contact code' : `${esc(v[0])}, ${v[1] === 'in' ? 'constituent' : 'office'}`}</code>`).join('')}</div>` : ''}
     <div class="sec">This office's answers</div>
     ${vals.length ? `<table class="plain"><thead><tr><th>Tag value</th><th>Means</th></tr></thead><tbody>${vals.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(CLASSES.find(c => c[0] === v.cls)?.[1] || v.cls)}${['community', 'religion', 'housing', 'issue'].includes(v.cls) ? ': ' + esc(v.value) : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="note">None yet. Answers from the "Unclassified tags" step appear here.</p>'}
   </div>
@@ -1074,7 +1132,7 @@ function renderGuide() {
   const steps = [
     { done: !!p.officeName, t: 'Name your office', b: 'So the dashboard is labelled for your electorate.', act: `<button class="btn" data-g="name">${p.officeName ? 'Change' : 'Set name'}</button>` },
     { done: !!g.tour, t: 'Try the sample and take the tour', b: 'Loads 18,000 fictional electors and points out the four parts of the dashboard. About three minutes.', act: `<button class="btn ${g.tour ? '' : 'primary'}" data-g="tour">${g.tour ? 'Take it again' : 'Start the tour'}</button>` },
-    { done: !!g.export, t: 'Prepare your export', b: 'Export from Campaign Central with the columns listed below.', act: `<button class="btn" data-g="export">${g.export ? 'Mark as not done' : 'Mark as done'}</button>` },
+    { done: !!g.export, t: 'Prepare your export', b: 'Export from your CRM (for example Campaign Central) with the columns listed below.', act: `<button class="btn" data-g="export">${g.export ? 'Mark as not done' : 'Mark as done'}</button>` },
     { done: !!g.own, t: 'Load your own export', b: 'Check what the import gate removed, sort any tags it doesn\'t recognise, then open your dashboard.', act: `<button class="btn ${g.tour && !g.own ? 'primary' : ''}" data-g="load">Choose a file</button>` },
   ];
   const n = steps.filter(s => s.done).length;
@@ -1087,12 +1145,12 @@ function renderGuide() {
     <div class="card steps">${steps.map((s, i) => `<div class="step ${s.done ? 'done' : ''}"><span class="num">${s.done ? '✓' : i + 1}</span><div><b>${s.t}</b><p>${s.b}</p></div><div class="act">${s.act}</div></div>`).join('')}</div>
 
     <h2 id="g-export">Pack these columns into your export</h2>
-    <p>Export the whole electorate from Campaign Central, including people the office has never contacted, with their interaction history. Column names don't need to match exactly: the tool reads the headings and works out what each column is. Hover a column to see why.</p>
+    <p>Export the whole electorate from your CRM (for example Campaign Central, or Swiftfox if your office has moved), including people the office has never contacted, with their interaction history. Column names don't need to match exactly: the tool reads the headings and works out what each column is. Hover a column to see why. <a href="#" id="dlTemplate">Download a column template</a> (headings only, no data).</p>
     <div class="card">
       <div class="sheet">${EXPORT_COLS.map(([c, k, why]) => `<div class="c${k}" title="${esc(why)}"><span>${esc(c)}</span></div>`).join('')}</div>
       <div class="sheetkey"><span class="cg">■ Must have</span><span class="cb">■ Worth adding</span><span class="cr">■ Leave out</span></div>
       <div class="cols3 notes">
-        <p><b>Must have.</b> The Campaign Central ID is what lets you download a target list and pull it back into Campaign Central.</p>
+        <p><b>Must have.</b> The CRM's ID is what lets you download a target list and import it straight back into the CRM. The list uses the same ID heading as your export.</p>
         <p><b>Worth adding.</b> Email, mobile and phone become yes/no flags, and date of birth becomes an age bracket. The values themselves are discarded.</p>
         <p><b>Leave out.</b> The import gate strips these if they slip through and tells you it found them, but the safest file never contained them.</p>
       </div>
@@ -1107,7 +1165,7 @@ function renderGuide() {
           <div class="grp"><div class="ppl" id="fsE"></div><div class="cap">12 in every 100 electors live in Fennvale</div></div>
           <div class="grp"><div class="ppl" id="fsC"></div><div class="cap" id="fsCap"></div></div>
         </div>
-        <label class="note" for="fsSlider" style="display:block;margin-top:14px">Drag to change how much contact Fennvale gets</label>
+        <label class="note" for="fsSlider" style="display:block;margin-top:14px">Drag to change how many Fennvale residents the office reaches</label>
         <input type="range" id="fsSlider" min="1" max="30" value="6">
       </div>
       <div class="fsx-r">
@@ -1122,7 +1180,7 @@ function renderGuide() {
     </div>
     <h3>Before you draw conclusions</h3>
     <ul class="cautions">
-      <li><b>It measures what gets logged, not everything that happens.</b> If outgoing calls or emails aren't recorded in Campaign Central, the office will look more reactive than it is. Patchy logging shows up as a gap.</li>
+      <li><b>It measures what gets logged, not everything that happens.</b> If outgoing calls or emails aren't recorded in the CRM, the office will look more reactive than it is. Patchy logging shows up as a gap.</li>
       <li><b>Small numbers swing.</b> In a group of 15 people, one extra contact changes its score a lot. Treat small groups as a prompt to look closer, not a finding.</li>
       <li><b>"Underserved" describes a share, not a failure.</b> It means the group got less contact than its size would suggest in this period. There may be good reasons.</li>
       <li><b>"Untagged" is missing data.</b> It groups people with nothing recorded for that category. A large untagged group usually means tags aren't being added when contact is logged.</li>
@@ -1131,17 +1189,17 @@ function renderGuide() {
   </div></div>`;
 }
 const EXPORT_COLS = [
-  ['ID', 'g', 'Campaign Central ID. Needed to download target lists.'], ['Suburb', 'g', 'Groups people by where they live.'], ['Postcode', 'g', 'Groups people by postcode.'], ['TOPIC (1)', 'g', 'Interaction sets: TOPIC, Tag and Interaction Details, as many as the export has.'], ['Tag (1)', 'g', 'Read by the office profile to find community, issue and other tags.'], ['Interaction Details Set 1', 'g', 'Cut down to a date and channel code. The note text is discarded.'],
+  ['ID', 'g', 'The CRM ID (for example Campaign Central). Needed to download target lists.'], ['Suburb', 'g', 'Groups people by where they live.'], ['Postcode', 'g', 'Groups people by postcode.'], ['TOPIC (1)', 'g', 'Interaction sets: TOPIC, Tag and Interaction Details, as many as the export has.'], ['Tag (1)', 'g', 'Read by the office profile to find community, issue and other tags.'], ['Interaction Details Set 1', 'g', 'Cut down to a date and channel code. The note text is discarded.'],
   ['Email', 'b', 'Becomes a yes/no flag. The address is discarded.'], ['Mobile', 'b', 'Becomes a yes/no flag. The number is discarded.'], ['DOB', 'b', 'Becomes an age bracket. The date is discarded.'], ['Ethnicity', 'b', 'Groups people by community.'], ['Interests', 'b', 'Groups people by issue.'], ['EnrolDate', 'b', 'Flags new electors. The date is discarded.'],
   ['First Name', 'r', 'Not needed. Stripped if present.'], ['Last Name', 'r', 'Not needed. Stripped if present.'], ['Address', 'r', 'Not needed. Stripped if present.'], ['Notes', 'r', 'Free text can hold anything. Dropped if present.'],
 ];
 const svgDots = (n, fill, extra = '') => { let o = ''; for (let i = 0; i < n; i++) o += `<circle cx="${12 + (i % 5) * 22}" cy="${14 + Math.floor(i / 5) * 22}" r="7" fill="${typeof fill === 'function' ? fill(i) : fill}"/>`; return `<svg viewBox="0 0 120 60">${o}${extra}</svg>`; };
 const GLOSS2 = [
-  ['Underserved, balanced, overserved', `<svg viewBox="0 0 120 60"><rect x="4" y="18" width="36" height="24" rx="4" fill="#E85D2F"/><rect x="42" y="18" width="36" height="24" rx="4" fill="#EEF1F5"/><rect x="80" y="18" width="36" height="24" rx="4" fill="#2E6FE0"/><text x="22" y="54" font-size="8" text-anchor="middle" fill="#64748B">&lt;0.8×</text><text x="98" y="54" font-size="8" text-anchor="middle" fill="#64748B">&gt;1.25×</text></svg>`, 'Under 0.8× a fair share is underserved (orange). Above 1.25× is overserved (blue). In between is balanced (grey).'],
+  ['Underserved, balanced, overserved', `<svg viewBox="0 0 120 60"><rect x="4" y="18" width="36" height="24" rx="4" fill="#E85D2F"/><rect x="42" y="18" width="36" height="24" rx="4" fill="#EEF1F5"/><rect x="80" y="18" width="36" height="24" rx="4" fill="#2E6FE0"/><text x="22" y="54" font-size="8" text-anchor="middle" fill="#64748B">&lt;0.8×</text><text x="98" y="54" font-size="8" text-anchor="middle" fill="#64748B">&gt;1.25×</text></svg>`, 'A group reached at under 0.8× the electorate\'s rate is underserved (orange). Above 1.25× is overserved (blue). In between is balanced (grey).'],
   ['Reached', svgDots(10, i => i < 3 ? '#2E6FE0' : '#E3E7EE'), 'The share of people in a group who had at least one contact in the period. Here, 3 of 10.'],
-  ['Low reach', `<svg viewBox="0 0 120 60">${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(i => `<circle cx="${40 + (i % 5) * 18}" cy="${16 + Math.floor(i / 5) * 26}" r="6" fill="${i === 1 || i === 2 ? '#2E6FE0' : '#E3E7EE'}"/>`).join('')}<rect x="2" y="24" width="14" height="12" rx="2" fill="#475569"/>${[0, 1, 2, 3, 4].map(k => `<path d="M16 30 Q 30 ${8 + k * 4} ${k % 2 ? 76 : 58} 16" stroke="#EC9308" stroke-width="1.3" fill="none"/>`).join('')}</svg>`, 'A fair share of contacts, but landing on the same few people. Fewer than half as many reached as the electorate overall.'],
+  ['Contact on few people', `<svg viewBox="0 0 120 60">${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(i => `<circle cx="${40 + (i % 5) * 18}" cy="${16 + Math.floor(i / 5) * 26}" r="6" fill="${i === 1 || i === 2 ? '#2E6FE0' : '#E3E7EE'}"/>`).join('')}<rect x="2" y="24" width="14" height="12" rx="2" fill="#475569"/>${[0, 1, 2, 3, 4].map(k => `<path d="M16 30 Q 30 ${8 + k * 4} ${k % 2 ? 76 : 58} 16" stroke="#EC9308" stroke-width="1.3" fill="none"/>`).join('')}</svg>`, 'At least its share of contacts, but reached at under 0.6× the electorate\'s rate. The same people keep hearing from the office. Marked with an amber dot.'],
   ['Who started it', `<svg viewBox="0 0 120 60"><rect x="4" y="20" width="22" height="20" rx="3" fill="#475569"/><circle cx="104" cy="22" r="7" fill="#94A3B8"/><path d="M93 44c2-8 20-8 22 0" fill="#94A3B8"/><path d="M30 24h56" stroke="#2E6FE0" stroke-width="3" marker-end="url(#ab)"/><path d="M88 38H34" stroke="#7E5BD0" stroke-width="3" marker-end="url(#ap)"/><defs><marker id="ab" markerWidth="6" markerHeight="6" refX="4" refY="3" orient="auto"><path d="M0 0l6 3-6 3z" fill="#2E6FE0"/></marker><marker id="ap" markerWidth="6" markerHeight="6" refX="4" refY="3" orient="auto"><path d="M0 0l6 3-6 3z" fill="#7E5BD0"/></marker></defs></svg>`, 'Blue: the office made the first contact (outgoing email, call, letter, doorknock). Purple: the constituent contacted the office first.'],
-  ['Coverage balance', `<svg viewBox="0 0 120 60"><path d="M20 52a40 40 0 0 1 80 0" stroke="#E3E7EE" stroke-width="9" fill="none"/><path d="M20 52a40 40 0 0 1 72.4-23.5" stroke="#1F7549" stroke-width="9" fill="none"/><text x="60" y="50" font-size="16" font-weight="700" text-anchor="middle" fill="#1F7549">86</text></svg>`, 'One score for the whole tab. 100 means contact is spread in exact proportion to each group\'s size.'],
+  ['Electors in underserved groups', svgDots(10, i => i < 3 ? '#E85D2F' : '#E3E7EE'), 'The headline number: the share of electors in at least one underserved group on the current tab. Lower is better.'],
   ['Hidden groups', `<svg viewBox="0 0 120 60">${[0, 1, 2, 3, 4, 5, 6].map(i => `<circle cx="${16 + (i % 4) * 18}" cy="${18 + Math.floor(i / 4) * 22}" r="6" fill="#E3E7EE"/>`).join('')}<rect x="90" y="24" width="20" height="16" rx="3" fill="#94A3B8"/><path d="M94 24v-5a6 6 0 0 1 12 0v5" stroke="#94A3B8" stroke-width="2.5" fill="none"/></svg>`, 'Any group or overlap with fewer than 10 electors is never shown, so nobody can be picked out.'],
 ];
 const personSvg = c => `<svg viewBox="0 0 16 22"><circle cx="8" cy="5" r="4" fill="${c}"/><path d="M1 21c0-5 3-8 7-8s7 3 7 8z" fill="${c}"/></svg>`;
@@ -1150,10 +1208,10 @@ function updateFairShare() {
   const st = fs < 0.8 ? 'Underserved' : fs > 1.25 ? 'Overserved' : 'Balanced';
   $('#fsE').innerHTML = Array.from({ length: e }, () => personSvg('#94A3B8')).join('');
   $('#fsC').innerHTML = Array.from({ length: Math.max(c, 12) }, (_, i) => personSvg(i < c ? (fs < 0.8 ? '#E85D2F' : fs > 1.25 ? '#2E6FE0' : '#64748B') : '#E3E7EE')).join('');
-  $('#fsCap').textContent = `${c} in every 100 contacts go to Fennvale`;
+  $('#fsCap').textContent = `${c} in every 100 people the office reached live in Fennvale`;
   const t = $('#fsTile'); t.style.background = bg; t.style.color = dark ? '#fff' : 'var(--ink)';
   t.innerHTML = `<b>Fennvale</b><span>${fsTxt(fs)} fair share</span><em>${st.toUpperCase()}</em>`;
-  $('#fsSum').textContent = `${c}% of contact ÷ 12% of electors = ${fsTxt(fs)}`;
+  $('#fsSum').textContent = `${c}% of people reached ÷ 12% of electors = ${fsTxt(fs)}`;
 }
 function initials(s) { return String(s).replace(/[^A-Za-z\s]/g, '').split(/\s+/).filter(Boolean).map(x => x[0]).join('').slice(0, 2).toUpperCase(); }
 function bindGuide() {
@@ -1167,15 +1225,23 @@ function bindGuide() {
     if (a === 'load') $('#fileInput').click();
     if (a === 'dash') { state.view = null; render(); window.scrollTo(0, 0); }
   });
+  const dt = $('#dlTemplate'); if (dt) dt.onclick = e => {
+    e.preventDefault();
+    const cols = ['ID', 'Suburb', 'Postcode', 'Age Bracket', 'Gender', 'Ethnicity', 'Interests', 'Email', 'Mobile', 'Phone', 'EnrolDate'];
+    for (let n = 1; n <= 3; n++) cols.push(`TOPIC (${n})`, `Tag (${n})`, `Interaction Details Set ${n}`);
+    const blob = new Blob([cols.join(',') + '\r\n'], { type: 'text/csv' });
+    const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'audience-coverage-column-template.csv';
+    document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(link.href), 5000);
+  };
 }
 
 const HELP = {
-  treemap: ['Attention by group', 'Each box is a group of electors. Box size is how many electors are in it. Colour compares the group\'s share of the office\'s contacts with its share of electors: orange is less than its fair share, blue is more, grey is about right.', 'Switch tabs to group by suburb, postcode, age, community or issues. A person can sit in more than one group, for example two issues. Click a box to see its detail on the right.'],
-  segment: ['Segment detail', 'The coverage score is 100 when the group gets at least its fair share of contact. The funnel shows how many people in the group were actually reached, which can be much lower than the contact count.', 'Channel mix and who started it show how the office talks to this group. If almost all contact is constituents coming to the office, nobody is reaching out. Target list downloads the Campaign Central IDs of people in this group not reached in the period.'],
+  treemap: ['Attention by group', 'Each box is a group of electors. Box size is how many electors are in it. Colour compares how many of the group the office has reached with the electorate\'s overall rate: orange is less than its fair share, blue is more, grey is about right.', 'Switch tabs to group by suburb, postcode, age, community or issues. A person can sit in more than one group, for example two issues. Click a box to see its detail on the right.'],
+  segment: ['How to reach them', 'Fair share compares the share of this group the office reached with the share of the whole electorate it reached. 0.5× means half the rate. It counts people, so one person with many contacts can\'t make a group look covered.', 'What this group cares about and Most reachable come straight from tags and contact columns in the file. Channel mix and who started it show how the office talks to this group. Target list downloads the CRM IDs of people in the group not reached in the period.'],
   trend: ['Contact by month', 'Total contacts logged each month, split into office-initiated (blue) and constituent-initiated (purple). The latest month is faded because it is only partly complete.', 'Built only from dates in this file. A dip can mean less contact or less logging.'],
-  gap: ['Attention gap', 'The groups furthest from a fair share across every tab, side by side. Bars left of the centre line got less contact than their size suggests; bars to the right got more.', 'The scale doubles at each step, so 0.5× and 2× are the same distance from the centre.'],
+  gap: ['Attention gap', 'The groups furthest from a fair share across every tab, side by side. Bars left of the centre line were reached at a lower rate than the electorate; bars to the right at a higher rate.', 'The scale doubles at each step, so 0.5× and 2× are the same distance from the centre.'],
   heatmap: ['Coverage across intersections', 'Fair share for combinations of two categories, for example age within each suburb. It finds gaps that a single tab hides, like young renters in one suburb.', 'Blank cells have fewer than 10 electors and are hidden so nobody can be singled out.'],
-  moves: ['Recommended next moves', 'Up to three suggestions worked out from the gaps above: the largest underserved groups, and any group where contact keeps landing on the same people.', 'The suggested channel depends on what contact details the group has on file. Treat these as a starting point for planning, not a ranking of priorities.'],
+  moves: ['Recommended next moves', 'Up to three suggestions worked out from fixed rules: the largest underserved groups, and any group where contact keeps landing on the same people.', 'The suggested channel depends on what contact details the group has on file. Treat these as a starting point for planning, not a ranking of priorities.'],
 };
 function helpBtn(k) { return `<button class="help" data-help="${k}" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/></svg>How to read this</button>`; }
 function showHelp(k) {
@@ -1187,8 +1253,8 @@ function showHelp(k) {
 
 const TOUR = [
   { sel: '.card.period', t: 'Pick a time period', b: 'Every number on the page updates. "As at" is the date of the latest contact in your file, not today.' },
-  { sel: '#tmCard', t: 'See who you\'re reaching', b: 'Each box is a group. Size is how many electors; colour is contact share against elector share. Orange means less than its fair share. Switch tabs to group by suburb, age, community or issues.' },
-  { sel: '.card.seg', t: 'Look at one group', b: 'Click any box to see how many people were reached, by which channel, and who started the contact. Download target list gives you the IDs of people not reached.' },
+  { sel: '#tmCard', t: 'See who you\'re reaching', b: 'Each box is a group. Size is how many electors; colour is how many of them you\'ve reached against the electorate\'s rate. Orange means less than its fair share. Switch tabs to group by suburb, age, community or issues.' },
+  { sel: '.card.seg', t: 'Look at one group', b: 'Click any box to see what the group cares about, how to reach them, and who started the contact. Download target list gives you the IDs of people not reached.' },
   { sel: '#movesBlock', t: 'Decide where to go next', b: 'Up to three suggestions worked out from the biggest gaps. Each has its own target list. Look for "How to read this" on any chart if you get stuck.' },
 ];
 let tour = null;
