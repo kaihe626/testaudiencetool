@@ -1,7 +1,7 @@
 /* Background reader: parses the file and runs the import gate off the main
    page so the dashboard stays responsive. Runs in this browser only. */
 'use strict';
-importScripts('app.js');
+importScripts('app.js' + self.location.search);
 onmessage = e => {
   const { buf, name, profile } = e.data;
   try {

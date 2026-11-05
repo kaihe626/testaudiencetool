@@ -9,6 +9,7 @@
  * what tag values mean, which contain no personal information.
  */
 'use strict';
+const BUILD = (typeof document !== 'undefined' && document.currentScript) ? new URL(document.currentScript.src).search : '';
 
 /* ------------------------------------------------------------------ constants */
 const PROFILE_KEY = 'audienceCoverage.officeProfile.v1';
@@ -881,7 +882,7 @@ async function readAndGate(file) {
     try {
       const buf = await file.arrayBuffer();
       return await new Promise((resolve, reject) => {
-        const w = new Worker('worker.js');
+        const w = new Worker('worker.js' + BUILD);
         w.onmessage = e => {
           const m = e.data;
           if (m.stage) stage(m.stage, m.w);
