@@ -560,7 +560,7 @@ function renderDashboard() {
   <div class="topbar">
     <span class="chip blue"><i></i>${d.mode === 'dated' ? 'Dated mode' : 'Undated mode'}</span>
     <span class="meta" title="Loaded ${esc(d.importedAt.toLocaleString('en-AU'))}">${fmt(d.people.length)} electors · as at ${esc(fmtDate(asOf))}</span>
-    <span class="meta mono" style="font-size:12px">profile v${state.profile.version}</span>
+    <span class="meta mono hide-sm" style="font-size:12px">profile v${state.profile.version}</span>
     <span class="ok"><i style="width:7px;height:7px;border-radius:50%;background:var(--green-m);display:inline-block"></i>File open in this tab${d.hasIds ? ' · target lists available' : ''}</span>
     <button class="btn" id="newImport"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>New import</button>
     <button class="btn" id="closeFile" title="Clear the file from this tab">Close</button>
@@ -629,13 +629,13 @@ function renderDashboard() {
 }
 
 function renderTreemap(A) {
-  if (!A.visible.length) return `<div class="tm" id="tm" style="display:flex;align-items:center;justify-content:center;background:#F4F6F9;border-radius:10px"><div style="max-width:420px;text-align:center;padding:24px"><b style="display:block;font-size:15px;margin-bottom:6px">No ${esc(DIM_LABEL[state.dim].toLowerCase())} group has 10 or more electors</b><span class="note">To protect privacy, groups under ${MIN_CELL} electors are never shown. Try another tab, or load a larger file.</span></div></div>`;
+  if (!A.visible.length) return `<div class="tm tm-empty" id="tm" style="display:flex;align-items:center;justify-content:center;background:#F4F6F9;border-radius:10px"><div style="max-width:420px;text-align:center;padding:24px"><b style="display:block;font-size:15px;margin-bottom:6px">No ${esc(DIM_LABEL[state.dim].toLowerCase())} group has 10 or more electors</b><span class="note">To protect privacy, groups under ${MIN_CELL} electors are never shown. Try another tab, or load a larger file.</span></div></div>`;
   const items = A.visible.slice().sort((a, b) => b.e - a.e);
   const top = items.slice(0, 18);
   const rest = items.slice(18);
   const data = top.map(g => ({ v: g.e, g }));
   if (rest.length) data.push({ v: rest.reduce((s, g) => s + g.e, 0), g: { name: `${rest.length} smaller groups`, e: rest.reduce((s, g) => s + g.e, 0), other: true } });
-  const W = 1000, H = 440;
+  const W = 1000, H = 520;
   const rects = squarify(data, 0, 0, W, H);
   return `<div class="tm" id="tm">${rects.map(r => {
     const g = r.g; const [bg, dark] = g.other ? ['#F4F6F9', false] : fsColour(g.fs);
@@ -645,9 +645,13 @@ function renderTreemap(A) {
       ${big && !g.other ? `<div class="d">${Math.round(g.reachPct * 100)}% reached · ${fsTxt(g.fs)} fair share</div><span class="st">${STATUS_TXT[g.status].toUpperCase()}</span>` : ''}
       ${g.lowReach ? '<span class="lr" title="Low reach"></span>' : ''}
     </button>`;
-  }).join('')}</div>`;
+  }).join('')}</div>${renderTmList(A)}`;
 }
 
+function renderTmList(A) {
+  const items = A.visible.slice().sort((a, b) => b.e - a.e);
+  return `<div class="tmlist">${items.map(g => { const [bg] = fsColour(g.fs); return `<button class="tmrow ${g.name === state.sel ? 'sel' : ''}" data-group="${esc(g.name)}"><i style="background:${bg}"></i><span class="n"><b>${esc(g.name)}</b><small>${fmt(g.e)} electors · ${Math.round(g.reachPct * 100)}% reached${g.lowReach ? ' · low reach' : ''}</small></span><span class="f">${fsTxt(g.fs)}<small class="st-${g.status}">${STATUS_TXT[g.status]}</small></span></button>`; }).join('')}</div>`;
+}
 function renderSegment(A) {
   const d = state.data; const g = A.list.find(x => x.name === state.sel);
   if (!g) return `<div class="card"><div class="sub">${A.visible.length ? 'Select a group in the chart to see its detail.' : 'Nothing to show for this tab.'}</div></div>`;
@@ -832,7 +836,7 @@ function bindDashboard() {
   const main = $('#main');
   main.querySelectorAll('[data-period]').forEach(b => b.onclick = () => { state.period = +b.dataset.period; render(); });
   main.querySelectorAll('[data-dim]').forEach(b => b.onclick = () => { state.dim = b.dataset.dim; state.sel = null; render(); });
-  main.querySelectorAll('[data-group]').forEach(b => b.onclick = () => { state.sel = b.dataset.group; render(); });
+  main.querySelectorAll('[data-group]').forEach(b => b.onclick = () => { state.sel = b.dataset.group; render(); if (window.innerWidth < 1180) { const seg = $('.card.seg'); if (seg) seg.scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth', block: 'start' }); } });
   main.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => { const [dim, name] = b.dataset.jump.split('|'); state.dim = dim; state.sel = name; render(); $('#tm').scrollIntoView({ behavior: 'smooth', block: 'center' }); });
   main.querySelectorAll('[data-target]').forEach(b => b.onclick = () => { const i = b.dataset.target.indexOf('|'); downloadTargets(b.dataset.target.slice(0, i), b.dataset.target.slice(i + 1)); });
   main.querySelectorAll('[data-help]').forEach(b => b.onclick = () => showHelp(b.dataset.help));
