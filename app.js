@@ -424,12 +424,16 @@ function aggregate(dimKey, w) {
     C += n; if (n) R++;
     tot.office += off; tot.constituent += con; for (const k in ch) tot.ch[k] = (tot.ch[k] || 0) + ch[k];
     const reachable = p.attrs.reach.length ? !p.attrs.reach.includes('No contact details') : null;
+    const iss = dimKey === 'issues' ? [] : p.attrs.issues.filter(x => x !== UNTAGGED);
+    const hasE = p.attrs.reach.includes('Has email'), hasM = p.attrs.reach.includes('Has mobile'), hasP = p.attrs.reach.includes('Has phone');
     for (const g of p.attrs[dimKey]) {
       let G = groups.get(g);
-      if (!G) { G = { name: g, dim: dimKey, e: 0, c: 0, r: 0, reachable: 0, email: 0, noDetails: 0, office: 0, constituent: 0, ch: {}, lastOff: null }; groups.set(g, G); }
+      if (!G) { G = { name: g, dim: dimKey, e: 0, c: 0, r: 0, reachable: 0, email: 0, noDetails: 0, office: 0, constituent: 0, ch: {}, lastOff: null, iss: new Map(), withIss: 0, det: { email: 0, mobile: 0, phone: 0 } }; groups.set(g, G); }
       G.e++; G.c += n; if (n) G.r++; G.office += off; G.constituent += con;
       if (reachable) G.reachable++; if (p.attrs.reach.includes('Has email')) G.email++; if (reachable === false) G.noDetails++;
       for (const k in ch) G.ch[k] = (G.ch[k] || 0) + ch[k];
+      if (iss.length) { G.withIss++; for (const x of iss) G.iss.set(x, (G.iss.get(x) || 0) + 1); }
+      if (hasE) G.det.email++; if (hasM) G.det.mobile++; if (hasP) G.det.phone++;
       if (lastOff != null && (G.lastOff == null || lastOff > G.lastOff)) G.lastOff = lastOff;
     }
   }
@@ -499,8 +503,8 @@ function renderEmpty() {
   <div class="topbar"><span class="chip grey"><i></i>No file open</span><span class="meta">Load an export to see your coverage</span></div>
   <div class="wrap"><div class="empty">
     <div class="kicker">Audience coverage · trial build</div>
-    <h1>Who are we actually reaching?</h1>
-    <p class="lede">Load a de-identified Campaign Central export to see which groups the office has spoken to enough, which it hasn't, and where the next doorknock, phone bank or email campaign should go.</p>
+    <h1>See who you're not talking to, and how to reach them.</h1>
+    <p class="lede">Offices end up hearing from the same people. This shows who you've been speaking to too much, who's been missing out, and how to reach the people you've missed on the issues they care about. Load a de-identified Campaign Central export to start.</p>
     <div class="drop" id="drop" style="margin-top:22px">
       <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#2E6FE0" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
       <h2>Drop your export here</h2>
@@ -566,8 +570,8 @@ function renderDashboard() {
     <div class="hero">
       <div>
         <div class="kicker">Audience coverage · ${esc(officeTitle)} · ${esc(d.mode === 'dated' ? per.long : 'All contact on record')}</div>
-        <h1>Who are we actually reaching?</h1>
-        <p class="lede">Which groups the office has spoken to enough, which it hasn't, and where the next doorknock, phone bank or email campaign should go.</p>
+        <h1>See who you're not talking to, and how to reach them.</h1>
+        <p class="lede">Offices end up hearing from the same people. This shows who you've been speaking to too much, who's been missing out, and how to reach the people you've missed on the issues they care about.</p>
         <div class="pills">
           <span class="pill u"><i></i>${counts.u} underserved</span><span class="pill o"><i></i>${counts.o} overserved</span>
           <span class="pill b"><i></i>${counts.b} balanced</span><span class="pill l"><i></i>${counts.l} low reach</span>
@@ -599,7 +603,7 @@ function renderDashboard() {
 
     <div class="grid2">
       <div class="card" id="tmCard">
-        <div class="cardhead"><div><div class="kicker" style="font-size:11px">Who you're reaching</div><h2>Attention by group</h2><div class="sub">Box size = electors · colour = share of contacts vs share of electors</div></div><div style="text-align:right"><div class="note">From the roll · every elector counted</div>${helpBtn('treemap')}</div></div>
+        <div class="cardhead"><div><div class="stepk"><span>1</span>Who you're missing</div><h2>Attention by group</h2><div class="sub">Box size = electors · colour = share of contacts vs share of electors</div></div><div style="text-align:right"><div class="note">From the roll · every elector counted</div>${helpBtn('treemap')}</div></div>
         <div class="tabs">${d.dims.map(k => `<button class="tab ${k === state.dim ? 'on' : ''}" data-dim="${k}">${DIM_LABEL[k]}</button>`).join('')}</div>
         ${renderTreemap(A)}
         <div class="legend">
@@ -653,13 +657,15 @@ function renderSegment(A) {
   const low = g.reachPct < A.overallReach * 0.75;
   const notReached = g.e - g.r;
   return `<div class="card seg">
-    <div class="cardhead"><div class="kicker" style="font-size:11px">Segment detail</div><span class="status st-${g.status}">${STATUS_TXT[g.status]}</span></div>
+    <div class="cardhead"><div class="stepk"><span>2</span>How to reach them</div><span class="status st-${g.status}">${STATUS_TXT[g.status]}</span></div>
     <div style="margin-top:4px">${helpBtn('segment')}</div>
     <h2 style="margin-top:8px">${esc(g.name)}</h2>
     <div class="sub">${esc(DIM_LABEL[g.dim])} · ${fmt(g.e)} electors (${(g.eShare * 100).toFixed(1)}%)</div>
     <div class="scorebox"><span class="n" style="color:${g.status === 'u' ? 'var(--orange)' : g.status === 'o' ? 'var(--blue-d)' : 'var(--green)'}">${g.score}</span><span class="note">/100 coverage</span><span class="fs" style="color:${g.status === 'u' ? 'var(--orange)' : 'var(--ink2)'}">${fsTxt(g.fs)} fair share</span></div>
     <div class="note">${(g.cShare * 100).toFixed(1)}% of contacts · ${(g.eShare * 100).toFixed(1)}% of electors</div>
     <div class="reachline ${low ? 'low' : 'ok'}"><i></i>Reached ${Math.round(g.reachPct * 100)}% of electors in this group <span style="font-weight:500;opacity:.8">(electorate ${Math.round(A.overallReach * 100)}%)</span></div>
+    ${renderCares(g)}
+    ${renderReachable(g, chs, chTotal)}
     <div class="sec">Their funnel</div>
     ${funnelRow('Electors', g.e, g.e)}
     ${d.hasReach ? funnelRow('Reachable', g.reachable, g.e) : ''}
@@ -674,6 +680,35 @@ function renderSegment(A) {
     <div style="margin-top:16px"><button class="btn primary block" data-target="${esc(g.dim)}|${esc(g.name)}" ${d.hasIds ? '' : 'disabled title="This file has no ID column"'}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>Download target list</button></div>
     <div class="note" style="text-align:center;margin-top:6px">${d.hasIds ? `${fmt(notReached)} IDs not reached ${d.mode === 'dated' ? 'in this period' : 'yet'} · available while the file is open` : 'Needs a Campaign Central ID column'}</div>
   </div>`;
+}
+const MIN_ISSUE_BASE = 10;
+function renderCares(g) {
+  const d = state.data; if (g.dim === 'issues' || !d.dims.includes('issues')) return '';
+  const head = '<div class="sec">What this group cares about</div>';
+  if (g.withIss < MIN_ISSUE_BASE) return head + `<div class="note">Not enough issue tags in this group to say${g.withIss ? ` (${fmt(g.withIss)} of ${fmt(g.e)} have one recorded)` : ''}.</div>`;
+  const top = [...g.iss].filter(([, n]) => n >= MIN_CELL).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  if (!top.length) return head + `<div class="note">No single issue is recorded for ${MIN_CELL} or more people in this group.</div>`;
+  return head + `<div class="cares">${top.map(([k, n]) => `<div class="care"><span>${esc(k)}</span><i><b style="width:${n / g.withIss * 100}%"></b></i><em>${pct(n, g.withIss)}%</em></div>`).join('')}</div>
+    <div class="note">Based on ${fmt(g.withIss)} of ${fmt(g.e)} people with an issue recorded.</div>`;
+}
+const DET_LABEL = { mobile: 'Mobile', email: 'Email', phone: 'Phone' };
+const DET_NOUN = { mobile: 'a mobile', email: 'an email address', phone: 'a phone number' };
+const CH_USES = { Email: ['email'], SMS: ['mobile'], Phone: ['mobile', 'phone'] };
+function renderReachable(g, chs, chTotal) {
+  const d = state.data; if (!d.hasReach || !g.e) return '';
+  const dets = Object.keys(DET_LABEL).map(k => [k, g.det[k] / g.e]).sort((a, b) => b[1] - a[1]);
+  if (!dets.some(([, v]) => v > 0)) return '';
+  const [best, bestP] = dets[0];
+  let line = '';
+  if (!chTotal) line = `No contact with this group in this period. ${DET_LABEL[best]} is on file for the most people (${Math.round(bestP * 100)}%).`;
+  else {
+    const top = chs[0][0]; const uses = CH_USES[top];
+    if (!uses) { if (bestP >= 0.1) line = `Most contact so far has been by ${top.toLowerCase()}, but ${Math.round(bestP * 100)}% of this group have ${DET_NOUN[best]} on file.`; }
+    else if (!uses.includes(best)) { const usedP = Math.max(...uses.map(u => g.det[u] / g.e)); if (bestP - usedP >= 0.1) line = `Most contact so far has been by ${top === 'SMS' ? 'SMS' : top.toLowerCase()}, but more of this group have ${DET_NOUN[best]} on file (${Math.round(bestP * 100)}% vs ${Math.round(usedP * 100)}%).`; }
+  }
+  return `<div class="sec">Most reachable</div>
+    <div class="cares">${dets.map(([k, v], i) => `<div class="care ${i === 0 ? 'top' : ''}"><span>${DET_LABEL[k]} on file</span><i><b style="width:${v * 100}%"></b></i><em>${Math.round(v * 100)}%</em></div>`).join('')}</div>
+    ${line ? `<div class="insight">${esc(line)}</div>` : ''}`;
 }
 function funnelRow(label, n, of) {
   return `<div class="fun"><div class="r"><em style="font-style:normal">${label}</em><em style="font-style:normal"><b>${fmt(n)}</b><span>${pct(n, of)}%</span></em></div><div class="bar"><i style="width:${of ? n / of * 100 : 0}%"></i></div></div>`;
@@ -784,8 +819,8 @@ function renderMoves(allGroups, A) {
     mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/>',
     phone: '<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/>',
   };
-  return `<div style="margin-top:26px" id="movesBlock"><div class="kicker" style="font-size:11px">Close the gap</div><h2 style="font-size:19px;margin:2px 0 2px">Recommended next moves</h2>
-  <div class="sub" style="color:var(--muted);font-size:13px">Where the next doorknock, phone bank or email campaign should go. Download the list, then pull it in Campaign Central. ${helpBtn('moves')}</div>
+  return `<div style="margin-top:26px" id="movesBlock"><div class="stepk"><span>2</span>How to reach them</div><h2 style="font-size:19px;margin:6px 0 2px">Recommended next moves</h2>
+  <div class="sub" style="color:var(--muted);font-size:13px">The groups missing out most, and who in them to contact. Download the list, then pull it in Campaign Central. ${helpBtn('moves')}</div>
   <div class="moves">${moves.map(m => `<div class="card move">
     <div class="tag"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${ICON[m.icon]}</svg></span>${esc(m.kind)} · ${esc(DIM_LABEL[m.g.dim])}</div>
     <h3>${esc(m.title)}</h3><p>${esc(m.body)}</p>
@@ -1004,7 +1039,8 @@ function showWelcome() {
   modal(`<header><div><div class="kicker">Audience coverage · trial build</div><h2>Welcome</h2></div></header>
   <div class="body welcome">
     <div>
-      <p style="margin-top:0">This dashboard shows which groups in the electorate the office is in contact with in proportion to their size, which groups it is missing, and where to go next.</p>
+      <p class="vp">See who you're not talking to, and how to reach them.</p>
+      <p style="margin-top:0">Offices end up hearing from the same people. This shows who you've been speaking to too much, who's been missing out, and how to reach the people you've missed on the issues they care about.</p>
       <div class="sec">Your office name</div>
       <input id="wName" maxlength="60" placeholder="e.g. your electorate name" value="${esc(state.profile.officeName || '')}" class="field">
       <div class="note" style="margin-top:4px">Shown on the dashboard. You can change it later under Office profile.</div>
@@ -1045,7 +1081,7 @@ function renderGuide() {
   <div class="wrap"><div class="guide">
     <div class="kicker">Audience coverage · getting started</div>
     <h1>Set up in four steps</h1>
-    <p class="lede">Work through these once. Everything after that is: export, load, read.</p>
+    <p class="lede">See who you're not talking to, and how to reach them. Work through these once. Everything after that is: export, load, read.</p>
     <div class="card steps">${steps.map((s, i) => `<div class="step ${s.done ? 'done' : ''}"><span class="num">${s.done ? '✓' : i + 1}</span><div><b>${s.t}</b><p>${s.b}</p></div><div class="act">${s.act}</div></div>`).join('')}</div>
 
     <h2 id="g-export">Pack these columns into your export</h2>
