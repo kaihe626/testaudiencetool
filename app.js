@@ -714,6 +714,7 @@ function renderSegment(A) {
     ${g.concentrated ? `<div class="reachline low"><i></i>Lots of contact, few people: ${fsTxt(g.cfs)} its share of contacts, but only ${Math.round(g.reachPct * 100)}% reached</div>` : ''}
     ${renderCares(g)}
     ${renderReachable(g, chs, chTotal)}
+    ${renderInsights(g, A)}
     <div class="sec">Their funnel</div>
     ${funnelRow('Electors', g.e, g.e)}
     ${d.hasReach ? funnelRow('Reachable', g.reachable, g.e) : ''}
@@ -757,6 +758,37 @@ function renderReachable(g, chs, chTotal) {
   return `<div class="sec">Most reachable</div>
     <div class="cares">${dets.map(([k, v], i) => `<div class="care ${i === 0 ? 'top' : ''}"><span>${DET_LABEL[k]} on file</span><i><b style="width:${v * 100}%"></b></i><em>${Math.round(v * 100)}%</em></div>`).join('')}</div>
     ${line ? `<div class="insight">${esc(line)}</div>` : ''}`;
+}
+/* Additional insights: fixed counts only. */
+const ZOOM_MIN = 50;
+function renderInsights(g, A) {
+  const d = state.data; const w = periodWindow();
+  const subs = new Map(); let lapsed = 0, never = 0;
+  for (const p of d.people) {
+    if (!p.attrs[g.dim].includes(g.name)) continue;
+    const reached = p.contacts.some(c => counted(c, w));
+    if (!reached) { if (everContacted(p)) lapsed++; else never++; }
+    for (const k of d.dims) {
+      if (k === g.dim || k === 'reach') continue;
+      for (const v of p.attrs[k]) {
+        if (v === UNTAGGED || v === 'Unknown') continue;
+        const key = k + '\u0000' + v; const x = subs.get(key) || { k, v, e: 0, r: 0 }; x.e++; if (reached) x.r++; subs.set(key, x);
+      }
+    }
+  }
+  const rate = A.overallReach;
+  const zoom = rate > 0 ? [...subs.values()].filter(x => x.e >= ZOOM_MIN).map(x => ({ ...x, fs: (x.r / x.e) / rate, short: x.e * rate - x.r }))
+    .filter(x => x.e < g.e * 0.9 && x.fs < 0.8 && (g.fs == null || x.fs <= g.fs * 0.85)).sort((a, b) => b.short - a.short).slice(0, 3) : [];
+  const dl = o => d.hasIds ? `<button class="mini-dl" data-tl="${esc(JSON.stringify(o))}" title="Download target list"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></button>` : '';
+  const notReached = lapsed + never;
+  return `<div class="addl"><div class="addl-h">Additional insights</div>
+    <div class="sec" style="margin-top:6px">Zoom in: biggest gaps inside ${esc(g.name)}</div>
+    ${zoom.length ? `<div class="zoom">${zoom.map(x => `<div class="zrow"><span><b>${esc(x.v)}</b><small>${esc(DIM_LABEL[x.k])} · ${fmt(x.e)} electors · ${fmt(x.e - x.r)} not reached</small></span><em>${fsTxt(x.fs)}</em>${dl({ d: g.dim, n: g.name, k: x.k, v: x.v })}</div>`).join('')}</div>`
+      : `<div class="note">${g.status === 'u' ? `The gap is spread evenly across ${esc(g.name)}: no sub-group of ${ZOOM_MIN}+ electors is noticeably worse than the group as a whole.` : `No sub-group of ${ZOOM_MIN}+ electors stands out as underserved.`}</div>`}
+    ${d.mode === 'dated' && notReached ? `<div class="sec">Not reached ${esc(PERIODS[state.period].long.toLowerCase())}</div>
+    <div class="lapse"><div><b>${fmt(lapsed)}</b><span>contacted ${state.officeOnly ? 'by the office ' : ''}before</span>${dl({ d: g.dim, n: g.name, s: 'lapsed' })}</div><div><b>${fmt(never)}</b><span>never contacted${state.officeOnly ? ' by the office' : ''}</span>${dl({ d: g.dim, n: g.name, s: 'never' })}</div></div>
+    <div class="note">People contacted before know the office: a "checking back in" message. The rest need an introduction.</div>` : ''}
+  </div>`;
 }
 function funnelRow(label, n, of) {
   return `<div class="fun"><div class="r"><em style="font-style:normal">${label}</em><em style="font-style:normal"><b>${fmt(n)}</b><span>${pct(n, of)}%</span></em></div><div class="bar"><i style="width:${of ? n / of * 100 : 0}%"></i></div></div>`;
@@ -880,6 +912,7 @@ function bindDashboard() {
   main.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => { const [dim, name] = b.dataset.jump.split('|'); state.dim = dim; state.sel = name; render(); $('#tm').scrollIntoView({ behavior: 'smooth', block: 'center' }); });
   main.querySelectorAll('[data-target]').forEach(b => b.onclick = () => { const i = b.dataset.target.indexOf('|'); downloadTargets(b.dataset.target.slice(0, i), b.dataset.target.slice(i + 1)); });
   main.querySelectorAll('[data-help]').forEach(b => b.onclick = () => showHelp(b.dataset.help));
+  main.querySelectorAll('[data-tl]').forEach(b => b.onclick = () => { const o = JSON.parse(b.dataset.tl); downloadTargets(o.d, o.n, o); });
   $('#hmRow').onchange = e => { state.hmRow = e.target.value; render(); };
   $('#hmCol').onchange = e => { state.hmCol = e.target.value; render(); };
   $('#newImport').onclick = () => $('#fileInput').click();
@@ -887,14 +920,17 @@ function bindDashboard() {
 }
 
 /* Target list: CRM IDs only (same column heading as the export), for people in the group not reached in the period. */
-function downloadTargets(dim, name) {
+const everContacted = p => p.contacts.some(c => !state.officeOnly || c.dir === 'out');
+function downloadTargets(dim, name, opt = {}) {
   const d = state.data; if (!d.hasIds) return;
   const w = periodWindow();
-  const ids = d.people.filter(p => p.id && p.attrs[dim].includes(name) && !p.contacts.some(c => counted(c, w))).map(p => p.id);
+  const ids = d.people.filter(p => p.id && p.attrs[dim].includes(name) && (!opt.k || p.attrs[opt.k].includes(opt.v)) && !p.contacts.some(c => counted(c, w))
+    && (!opt.s || (opt.s === 'lapsed') === everContacted(p))).map(p => p.id);
   const hdr = /[",\r\n]/.test(d.idHeader || '') ? `"${d.idHeader.replace(/"/g, '""')}"` : (d.idHeader || 'ID');
   const blob = new Blob([hdr + '\r\n' + ids.map(i => /[",\r\n]/.test(i) ? `"${i.replace(/"/g, '""')}"` : i).join('\r\n') + '\r\n'], { type: 'text/csv' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-  a.download = `target-list-${DIM_LABEL[dim].toLowerCase().replace(/\s+/g, '-')}-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.csv`;
+  const slug = x => String(x).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  a.download = `target-list-${slug(DIM_LABEL[dim])}-${slug(name)}${opt.k ? '-' + slug(opt.v) : ''}${opt.s ? '-' + (opt.s === 'lapsed' ? 'contacted-before' : 'never-contacted') : ''}.csv`;
   document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   toast(`${fmt(ids.length)} IDs downloaded. Import them into your CRM (for example Campaign Central) to build the list.`);
 }
