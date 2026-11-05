@@ -97,14 +97,14 @@ h1{font-size:30px;margin:6px 0 8px;letter-spacing:-.015em;line-height:1.15}
 .card h2{font-size:18px;margin:2px 0 2px} .card .sub{color:var(--muted);font-size:13px}
 .period{margin-top:18px;display:grid;grid-template-columns:160px 1fr auto auto;gap:28px;align-items:center}
 .period .lbl b{display:block;font-size:17px}
-.slider{position:relative;padding:14px 8px 0}
+.slider{position:relative;padding:20px 32px 30px}
 .slider .track{height:4px;background:var(--line);border-radius:2px;position:relative}
 .slider .fill{position:absolute;left:0;top:0;height:4px;background:var(--blue);border-radius:2px}
-.stops{display:flex;justify-content:space-between;margin-top:-10px}
-.stop{display:flex;flex-direction:column;align-items:center;gap:6px;background:none;border:0;cursor:pointer;font-size:11.5px;color:var(--faint);width:60px;padding:0}
-.stop .dot{width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid #CBD3DF;margin-top:3px}
+.stops{position:absolute;left:32px;right:32px;top:22px;height:0}
+.stop{position:absolute;top:0;transform:translateX(-50%);background:none;border:0;cursor:pointer;font-size:11.5px;color:var(--faint);width:72px;padding:14px 0 0;text-align:center;white-space:nowrap}
+.stop .dot{position:absolute;left:50%;top:0;transform:translate(-50%,-50%);width:12px;height:12px;border-radius:50%;background:#fff;border:2px solid #CBD3DF;box-sizing:border-box}
 .stop.past .dot{background:var(--blue);border-color:var(--blue)}
-.stop.on{color:var(--blue-d);font-weight:700} .stop.on .dot{width:18px;height:18px;border:3px solid var(--blue);background:#fff;margin-top:-1px}
+.stop.on{color:var(--blue-d);font-weight:700} .stop.on .dot{width:20px;height:20px;border:3px solid var(--blue);background:#fff;box-shadow:0 0 0 4px rgba(46,111,224,.12)}
 .slider.off{opacity:.45;pointer-events:none}
 .mini{text-align:right} .mini .k{font-size:11px;letter-spacing:.1em;font-weight:600;color:var(--muted)} .mini b{font-size:20px;display:block} .mini span{font-size:12px;color:var(--ink2)}
 .split{height:6px;border-radius:3px;display:flex;overflow:hidden;width:170px;margin:6px 0 4px;background:var(--line)}
@@ -174,7 +174,7 @@ h1{font-size:30px;margin:6px 0 8px;letter-spacing:-.015em;line-height:1.15}
 .move .acts{display:flex;gap:8px} .move .acts .btn.primary{flex:1;justify-content:center}
 
 .trend{margin-top:18px}
-.trend svg{width:100%;height:150px;display:block}
+.tchart{display:flex;gap:10px;align-items:stretch;height:190px;margin-top:14px}.tcol{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;align-items:stretch;text-align:center}.tv{font-size:12px;color:var(--ink2);font-variant-numeric:tabular-nums;margin-bottom:4px}.tbar{background:#C9B8F0;border-radius:4px 4px 2px 2px;display:flex;flex-direction:column;justify-content:flex-end;overflow:hidden;min-height:2px;max-height:140px}.tbar i{display:block;background:var(--blue)}.tl{font-size:12px;color:var(--muted);margin-top:6px}.tcol.partial .tbar{opacity:.55}.tcol:hover .tbar{filter:brightness(.95)}
 
 /* empty / import */
 .empty{max-width:880px;margin:36px auto}
@@ -297,7 +297,7 @@ table.plain{width:100%;border-collapse:collapse;font-size:13px} table.plain td,t
 .tmrow .f .st-u{color:var(--orange)} .tmrow .f .st-o{color:var(--blue-d)} .tmrow .f .st-b{color:var(--muted)}
 .tmrow.sel{background:var(--blue-l);border-radius:8px}
 @media (max-width:1000px){.hero{flex-wrap:wrap}.hero .stats{width:100%;justify-content:flex-start;padding-top:14px;border-top:1px solid var(--line)}}
-@media (max-width:640px){.vsep{display:none}.cardhead{flex-wrap:wrap;gap:6px}.cardhead>div[style*="text-align:right"]{text-align:left!important}.tmrow i{background-image:linear-gradient(rgba(0,0,0,.04),rgba(0,0,0,.04))}.tm:not(.tm-empty){display:none!important}.tmlist{display:block}.hide-sm{display:none}h1{font-size:24px}.lede{font-size:14px}}
+@media (max-width:640px){.tchart{gap:4px}.tv,.tl{font-size:10px}.vsep{display:none}.cardhead{flex-wrap:wrap;gap:6px}.cardhead>div[style*="text-align:right"]{text-align:left!important}.tmrow i{background-image:linear-gradient(rgba(0,0,0,.04),rgba(0,0,0,.04))}.tm:not(.tm-empty){display:none!important}.tmlist{display:block}.hide-sm{display:none}h1{font-size:24px}.lede{font-size:14px}}
 </style>
 </head>
 <body>

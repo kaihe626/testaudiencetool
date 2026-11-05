@@ -591,7 +591,7 @@ function renderDashboard() {
       <div class="lbl"><div class="kicker" style="font-size:11px">Time period</div><b>${esc(d.mode === 'dated' ? per.long : 'All contact on record')}</b></div>
       <div class="slider ${d.mode === 'dated' ? '' : 'off'}">
         <div class="track"><div class="fill" style="width:${state.period / (PERIODS.length - 1) * 100}%"></div></div>
-        <div class="stops">${PERIODS.map((p, i) => `<button class="stop ${i < state.period ? 'past' : ''} ${i === state.period ? 'on' : ''}" data-period="${i}"><span class="dot"></span>${p.short}</button>`).join('')}</div>
+        <div class="stops">${PERIODS.map((p, i) => `<button class="stop ${i < state.period ? 'past' : ''} ${i === state.period ? 'on' : ''}" data-period="${i}" style="left:${i / (PERIODS.length - 1) * 100}%"><span class="dot"></span>${p.short}</button>`).join('')}</div>
       </div>
       <div class="mini"><div class="k">CONTACTS</div><b>${fmt(A.C)}</b><span>${fmt(A.R)} people reached (${pct(A.R, A.N)}%)</span></div>
       ${A.tot.office + A.tot.constituent === 0 ? `<div class="mini" style="text-align:left"><div class="k">WHO STARTED IT</div><span>Not recorded in this file</span></div>` : `
@@ -724,25 +724,20 @@ function renderTrend() {
   for (let i = 11; i >= 0; i--) {
     const s = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - i, 1));
     const e = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - i + 1, 0));
-    months.push({ label: s.toLocaleDateString('en-AU', { month: 'short' }), w: [dayNum(s), Math.min(dayNum(e), d.asOfDay)], partial: i === 0 && dayNum(e) > d.asOfDay });
+    months.push({ label: s.toLocaleDateString('en-AU', { month: 'short' }).slice(0, 3), w: [dayNum(s), Math.min(dayNum(e), d.asOfDay)], partial: i === 0 && dayNum(e) > d.asOfDay });
   }
   let pts = months.map(m => { let c = 0, r = 0, off = 0; for (const p of d.people) { let n = 0; for (const x of p.contacts) if (inWin(x, m.w)) { n++; if (x.dir === 'out') off++; } c += n; if (n) r++; } return { ...m, c, r, off }; });
   const first = pts.findIndex(p => p.c > 0);
   pts = pts.slice(Math.max(0, Math.min(first < 0 ? 0 : first, pts.length - 6)));
   const max = Math.max(1, ...pts.map(p => p.c));
-  const W = 1000, H = 150, pad = 26, bw = (W - pad * 2) / pts.length;
-  const bars = pts.map((p, i) => {
-    const h = p.c / max * (H - 40); const ho = p.off / max * (H - 40); const x = pad + i * bw + 6;
-    return `<g><title>${p.label}: ${fmt(p.c)} contacts, ${fmt(p.r)} people reached${p.partial ? ' (month to date)' : ''}</title>
-      <rect x="${x}" y="${H - 22 - h}" width="${bw - 12}" height="${h}" rx="3" fill="#C9B8F0" ${p.partial ? 'opacity=".55"' : ''}/>
-      <rect x="${x}" y="${H - 22 - ho}" width="${bw - 12}" height="${ho}" rx="3" fill="#2E6FE0" ${p.partial ? 'opacity=".55"' : ''}/>
-      <text x="${x + (bw - 12) / 2}" y="${H - 6}" text-anchor="middle" font-size="12" fill="#64748B">${p.label}</text>
-      <text x="${x + (bw - 12) / 2}" y="${H - 26 - h}" text-anchor="middle" font-size="11" fill="#475569">${fmt(p.c)}</text></g>`;
-  }).join('');
+  const bars = pts.map(p => `<div class="tcol ${p.partial ? 'partial' : ''}" title="${p.label}: ${fmt(p.c)} contacts, ${fmt(p.r)} people reached${p.partial ? ' (month to date)' : ''}">
+      <span class="tv">${fmt(p.c)}</span>
+      <div class="tbar" style="height:${Math.max(2, p.c / max * 140)}px"><i style="height:${p.c ? p.off / p.c * 100 : 0}%"></i></div>
+      <span class="tl">${p.label}</span></div>`).join('');
   return `<div class="card trend">
     <div class="cardhead"><div><div class="kicker" style="font-size:11px">Over time</div><h2>Contact by month</h2><div class="sub">Built from the dated contact history in this one file. Nothing is stored between imports.</div>${helpBtn('trend')}</div>
     <div class="legend" style="margin:0"><span style="display:inline-flex;gap:6px;align-items:center"><i style="width:10px;height:10px;border-radius:2px;background:#2E6FE0;display:inline-block"></i>Office reached out</span><span style="display:inline-flex;gap:6px;align-items:center"><i style="width:10px;height:10px;border-radius:2px;background:#C9B8F0;display:inline-block"></i>Constituent came to us</span></div></div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Contacts per month">${bars}</svg>
+    <div class="tchart" role="img" aria-label="Contacts per month">${bars}</div>
   </div>`;
 }
 
